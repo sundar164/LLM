@@ -1,0 +1,472 @@
+# =============================================================================
+# LCEL (LangChain Expression Language) Comprehensive Guide
+# =============================================================================
+
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
+from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain_core.runnables import (
+    RunnablePassthrough, RunnableLambda, RunnableParallel, 
+    RunnableBranch, RunnableConfig
+)
+from langchain_openai import ChatOpenAI
+from langchain_community.vectorstores import FAISS
+from langchain_openai import OpenAIEmbeddings
+from typing import Dict, List
+import json
+
+# Initialize components
+llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.7)
+embeddings = OpenAIEmbeddings()
+
+# =============================================================================
+# 1. BASIC LCEL CONCEPTS
+# =============================================================================
+
+print("=== 1. BASIC LCEL PIPELINE ===")
+
+# Traditional way (deprecated)
+# from langchain.chains import LLMChain
+# chain = LLMChain(llm=llm, prompt=prompt)
+
+# LCEL way (modern)
+prompt = PromptTemplate.from_template("Tell me a joke about {topic}")
+output_parser = StrOutputParser()
+
+# The pipe operator creates a chain
+basic_chain = prompt | llm | output_parser
+
+# Usage
+result = basic_chain.invoke({"topic": "programming"})
+print(f"Basic chain result: {result}")
+
+# =============================================================================
+# 2. CHAT PROMPT TEMPLATES WITH LCEL
+# =============================================================================
+
+print("\n=== 2. CHAT PROMPT TEMPLATES ===")
+
+chat_prompt = ChatPromptTemplate.from_messages([
+    ("system", "You are a helpful assistant that explains concepts clearly."),
+    ("human", "Explain {concept} in simple terms.")
+])
+
+chat_chain = chat_prompt | llm | StrOutputParser()
+
+result = chat_chain.invoke({"concept": "machine learning"})
+print(f"Chat chain result: {result[:100]}...")
+
+# =============================================================================
+# 3. RUNNABLE PASSTHROUGH - PASSING DATA THROUGH
+# =============================================================================
+
+print("\n=== 3. RUNNABLE PASSTHROUGH ===")
+
+# RunnablePassthrough passes input unchanged to the next component
+passthrough_prompt = ChatPromptTemplate.from_messages([
+    ("system", "You are a helpful assistant."),
+    ("human", "Question: {question}\nContext: {context}\nAnswer:")
+])
+
+# Using RunnablePassthrough to preserve the original input
+passthrough_chain = (
+    {
+        "question": RunnablePassthrough(),  # Passes the input string directly
+        "context": RunnablePassthrough()    # Could be replaced with retriever
+    }
+    | passthrough_prompt 
+    | llm 
+    | StrOutputParser()
+)
+
+# For demo, we'll use a simpler version
+simple_passthrough = RunnablePassthrough() | llm | StrOutputParser()
+result = simple_passthrough.invoke("What is Python?")
+print(f"Passthrough result: {result[:100]}...")
+
+# =============================================================================
+# 4. RUNNABLE LAMBDA - CUSTOM FUNCTIONS IN CHAIN
+# =============================================================================
+
+print("\n=== 4. RUNNABLE LAMBDA ===")
+
+def format_question(input_dict):
+    """Custom function to format the input"""
+    question = input_dict.get("question", "")
+    return f"Please answer this question thoroughly: {question}"
+
+def extract_keywords(text):
+    """Extract keywords from response"""
+    words = text.split()
+    keywords = [word for word in words if len(word) > 5][:5]
+    return {"response": text, "keywords": keywords}
+
+lambda_chain = (
+    RunnableLambda(format_question) 
+    | llm 
+    | StrOutputParser() 
+    | RunnableLambda(extract_keywords)
+)
+
+result = lambda_chain.invoke({"question": "What is artificial intelligence?"})
+print(f"Lambda chain result: {result}")
+
+# =============================================================================
+# 5. RUNNABLE PARALLEL - PARALLEL EXECUTION
+# =============================================================================
+
+print("\n=== 5. RUNNABLE PARALLEL ===")
+
+# Run multiple chains in parallel
+summary_prompt = PromptTemplate.from_template("Summarize this in one sentence: {text}")
+keywords_prompt = PromptTemplate.from_template("Extract 3 keywords from: {text}")
+sentiment_prompt = PromptTemplate.from_template("What's the sentiment of: {text}")
+
+parallel_chain = RunnableParallel({
+    "summary": summary_prompt | llm | StrOutputParser(),
+    "keywords": keywords_prompt | llm | StrOutputParser(),
+    "sentiment": sentiment_prompt | llm | StrOutputParser()
+})
+
+sample_text = "I love using LangChain for building AI applications. It makes development so much easier!"
+result = parallel_chain.invoke({"text": sample_text})
+print(f"Parallel chain result: {result}")
+
+# =============================================================================
+# 6. RUNNABLE BRANCH - CONDITIONAL LOGIC
+# =============================================================================
+
+print("\n=== 6. RUNNABLE BRANCH ===")
+
+def route_question(input_dict):
+    """Route questions based on type"""
+    question = input_dict["question"].lower()
+    if "code" in question or "programming" in question:
+        return "coding"
+    elif "math" in question or "calculate" in question:
+        return "math"
+    else:
+        return "general"
+
+coding_prompt = PromptTemplate.from_template(
+    "You are a coding expert. Answer this programming question: {question}"
+)
+math_prompt = PromptTemplate.from_template(
+    "You are a math tutor. Solve this problem step by step: {question}"
+)
+general_prompt = PromptTemplate.from_template(
+    "You are a helpful assistant. Answer this question: {question}"
+)
+
+branch_chain = RunnableBranch(
+    (lambda x: route_question(x) == "coding", coding_prompt | llm | StrOutputParser()),
+    (lambda x: route_question(x) == "math", math_prompt | llm | StrOutputParser()),
+    general_prompt | llm | StrOutputParser()  # default
+)
+
+# Test different types of questions
+questions = [
+    {"question": "How do I write a Python function?"},
+    {"question": "What is 25 * 4 + 10?"},
+    {"question": "What is the capital of France?"}
+]
+
+for q in questions:
+    result = branch_chain.invoke(q)
+    print(f"Question: {q['question']}")
+    print(f"Answer: {result[:100]}...")
+    print()
+
+# =============================================================================
+# 7. RAG PIPELINE WITH LCEL
+# =============================================================================
+
+print("\n=== 7. RAG PIPELINE ===")
+
+# Create a simple vector store for demo
+documents = [
+    "LangChain is a framework for developing applications powered by language models.",
+    "LCEL (LangChain Expression Language) uses the pipe operator to chain components.",
+    "Vector stores in LangChain help with similarity search and retrieval.",
+    "Retrieval Augmented Generation (RAG) combines retrieval with language generation."
+]
+
+# Create vector store
+vectorstore = FAISS.from_texts(documents, embeddings)
+retriever = vectorstore.as_retriever(k=2)
+
+def format_docs(docs):
+    """Format retrieved documents"""
+    return "\n\n".join(doc.page_content for doc in docs)
+
+# RAG chain using LCEL
+rag_prompt = ChatPromptTemplate.from_template("""
+Use the following context to answer the question. If you don't know the answer based on the context, say so.
+
+Context: {context}
+
+Question: {question}
+
+Answer:
+""")
+
+rag_chain = (
+    {
+        "context": lambda x: format_docs(retriever.get_relevant_documents(x["question"])),
+        "question": lambda x: x["question"]
+    }
+    | rag_prompt
+    | llm
+    | StrOutputParser()
+)
+
+rag_result = rag_chain.invoke({"question": "What is LCEL?"})
+print(f"RAG result: {rag_result}")
+
+# =============================================================================
+# 8. COMPLEX MULTI-STEP PIPELINE
+# =============================================================================
+
+print("\n=== 8. COMPLEX MULTI-STEP PIPELINE ===")
+
+# Step 1: Extract entities
+entity_prompt = PromptTemplate.from_template(
+    "Extract the main entities (people, places, organizations) from: {text}"
+)
+
+# Step 2: Generate questions about entities
+questions_prompt = PromptTemplate.from_template(
+    "Based on these entities: {entities}, generate 3 interesting questions about them."
+)
+
+# Step 3: Answer the questions
+answer_prompt = PromptTemplate.from_template(
+    "Answer this question concisely: {question}"
+)
+
+# Multi-step chain
+multi_step_chain = (
+    {"text": RunnablePassthrough()}
+    | RunnableParallel({
+        "original_text": lambda x: x["text"],
+        "entities": entity_prompt | llm | StrOutputParser()
+    })
+    | RunnableParallel({
+        "original_text": lambda x: x["original_text"],
+        "entities": lambda x: x["entities"],
+        "questions": lambda x: (questions_prompt | llm | StrOutputParser()).invoke({"entities": x["entities"]})
+    })
+    | RunnableLambda(lambda x: {
+        "summary": f"Original: {x['original_text'][:100]}...",
+        "entities": x["entities"],
+        "questions": x["questions"]
+    })
+)
+
+sample_text = "Elon Musk founded SpaceX in 2002 in California. The company has revolutionized space travel."
+complex_result = multi_step_chain.invoke(sample_text)
+print(f"Complex pipeline result: {complex_result}")
+
+# =============================================================================
+# 9. STREAMING WITH LCEL
+# =============================================================================
+
+print("\n=== 9. STREAMING ===")
+
+streaming_chain = (
+    PromptTemplate.from_template("Write a short story about {topic}")
+    | llm
+    | StrOutputParser()
+)
+
+# Stream the response
+print("Streaming response:")
+for chunk in streaming_chain.stream({"topic": "a robot learning to paint"}):
+    print(chunk, end="", flush=True)
+print("\n")
+
+# =============================================================================
+# 10. ASYNC LCEL
+# =============================================================================
+
+print("\n=== 10. ASYNC EXECUTION ===")
+
+import asyncio
+
+async def async_example():
+    """Demonstrate async LCEL execution"""
+    async_chain = (
+        PromptTemplate.from_template("Explain {concept} briefly")
+        | llm
+        | StrOutputParser()
+    )
+    
+    # Run multiple chains concurrently
+    tasks = [
+        async_chain.ainvoke({"concept": "quantum computing"}),
+        async_chain.ainvoke({"concept": "blockchain"}),
+        async_chain.ainvoke({"concept": "neural networks"})
+    ]
+    
+    results = await asyncio.gather(*tasks)
+    return results
+
+# Run async example (uncomment to test)
+# async_results = asyncio.run(async_example())
+# print(f"Async results: {len(async_results)} responses generated")
+
+# =============================================================================
+# 11. ERROR HANDLING IN LCEL
+# =============================================================================
+
+print("\n=== 11. ERROR HANDLING ===")
+
+def safe_operation(input_data):
+    """Function that might fail"""
+    if "error" in input_data.get("text", "").lower():
+        raise ValueError("Intentional error for demo")
+    return input_data["text"].upper()
+
+def handle_error(error):
+    """Error handler"""
+    return f"Error occurred: {str(error)}"
+
+# Chain with error handling
+safe_chain = (
+    RunnableLambda(safe_operation).with_fallbacks([
+        RunnableLambda(lambda x: "Fallback: Processing failed")
+    ])
+)
+
+# Test normal operation
+try:
+    result1 = safe_chain.invoke({"text": "Hello World"})
+    print(f"Normal result: {result1}")
+except Exception as e:
+    print(f"Error: {e}")
+
+# Test error case
+try:
+    result2 = safe_chain.invoke({"text": "This will cause an error"})
+    print(f"Error result: {result2}")
+except Exception as e:
+    print(f"Error: {e}")
+
+# =============================================================================
+# 12. CONFIGURATION AND METADATA
+# =============================================================================
+
+print("\n=== 12. CONFIGURATION ===")
+
+# Chain with configuration
+configurable_chain = (
+    PromptTemplate.from_template("Respond in {style} style: {question}")
+    | llm.configurable_fields(
+        temperature=RunnableConfig(tags=["temperature"])
+    )
+    | StrOutputParser()
+)
+
+# Use different configurations
+formal_result = configurable_chain.invoke(
+    {"style": "formal", "question": "What is AI?"},
+    config={"configurable": {"temperature": 0.1}}
+)
+
+casual_result = configurable_chain.invoke(
+    {"style": "casual", "question": "What is AI?"},
+    config={"configurable": {"temperature": 0.9}}
+)
+
+print(f"Formal result: {formal_result[:100]}...")
+print(f"Casual result: {casual_result[:100]}...")
+
+# =============================================================================
+# 13. LCEL VS TRADITIONAL CHAINS COMPARISON
+# =============================================================================
+
+print("\n=== 13. LCEL ADVANTAGES ===")
+
+advantages = """
+LCEL Advantages over Traditional Chains:
+
+1. **Composability**: Easy to combine and modify chains
+   - LCEL: chain1 | chain2 | chain3
+   - Traditional: Complex nested chain classes
+
+2. **Readability**: Clear data flow with pipe operator
+   - LCEL: prompt | llm | parser
+   - Traditional: LLMChain(llm=llm, prompt=prompt, output_parser=parser)
+
+3. **Streaming Support**: Built-in streaming capabilities
+   - LCEL: chain.stream(input)
+   - Traditional: Manual streaming implementation
+
+4. **Async Support**: Native async/await support  
+   - LCEL: await chain.ainvoke(input)
+   - Traditional: Limited async support
+
+5. **Parallel Execution**: Easy parallel processing
+   - LCEL: RunnableParallel({...})
+   - Traditional: Manual thread/process management
+
+6. **Error Handling**: Built-in fallbacks and error handling
+   - LCEL: chain.with_fallbacks([fallback_chain])
+   - Traditional: Manual try/catch blocks
+
+7. **Configuration**: Dynamic configuration support
+   - LCEL: chain.invoke(input, config={...})
+   - Traditional: Fixed configuration at creation
+
+8. **Type Safety**: Better type hints and validation
+   - LCEL: Automatic type inference
+   - Traditional: Manual type checking
+"""
+
+print(advantages)
+
+# =============================================================================
+# 14. REAL-WORLD EXAMPLE: CONTENT GENERATION PIPELINE
+# =============================================================================
+
+print("\n=== 14. REAL-WORLD EXAMPLE ===")
+
+# Content generation pipeline for blog posts
+research_prompt = PromptTemplate.from_template(
+    "Research and provide key facts about: {topic}"
+)
+
+outline_prompt = PromptTemplate.from_template(
+    "Create a blog post outline for: {topic}\nBased on research: {research}"
+)
+
+content_prompt = PromptTemplate.from_template(
+    "Write a blog post section based on:\nTopic: {topic}\nOutline: {outline}\nSection: {section}"
+)
+
+# Complete content generation pipeline
+content_pipeline = (
+    {"topic": RunnablePassthrough()}
+    | RunnableParallel({
+        "topic": lambda x: x["topic"],
+        "research": research_prompt | llm | StrOutputParser()
+    })
+    | RunnableParallel({
+        "topic": lambda x: x["topic"],
+        "research": lambda x: x["research"],
+        "outline": lambda x: (outline_prompt | llm | StrOutputParser()).invoke({
+            "topic": x["topic"], 
+            "research": x["research"]
+        })
+    })
+    | RunnableLambda(lambda x: {
+        "topic": x["topic"],
+        "research": x["research"][:200] + "...",
+        "outline": x["outline"][:300] + "..."
+    })
+)
+
+blog_result = content_pipeline.invoke("Sustainable Energy Solutions")
+print(f"Content pipeline result: {json.dumps(blog_result, indent=2)}")
+
+print("\n=== LCEL GUIDE COMPLETE ===")
+print("LCEL provides a powerful, flexible way to build LangChain applications!")
