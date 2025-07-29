@@ -1,0 +1,1026 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import json
+from datetime import datetime
+
+class SimpleAutoencoder:
+    def __init__(self, input_dim, latent_dim, learning_rate=0.05):
+        self.input_dim = input_dim
+        self.latent_dim = latent_dim
+        self.learning_rate = learning_rate
+        
+        # Initialize weights randomly with better initialization
+        np.random.seed(42)
+        self.W1 = np.random.randn(input_dim, latent_dim) * np.sqrt(2.0 / input_dim)
+        self.b1 = np.zeros(latent_dim)
+        self.W2 = np.random.randn(latent_dim, input_dim) * np.sqrt(2.0 / latent_dim)
+        self.b2 = np.zeros(input_dim)
+        
+        self.training_losses = []
+    
+    def sigmoid(self, x):
+        return 1 / (1 + np.exp(-np.clip(x, -500, 500)))
+    
+    def sigmoid_derivative(self, x):
+        return x * (1 - x)
+    
+    def forward(self, X):
+        # Encoder
+        self.z1 = np.dot(X, self.W1) + self.b1
+        self.a1 = self.sigmoid(self.z1)  # Latent representation
+        
+        # Decoder
+        self.z2 = np.dot(self.a1, self.W2) + self.b2
+        self.a2 = self.sigmoid(self.z2)  # Reconstructed output
+        
+        return self.a2
+    
+    def backward(self, X, output):
+        m = X.shape[0]
+        
+        # Output layer gradients
+        dZ2 = output - X
+        dW2 = (1/m) * np.dot(self.a1.T, dZ2)
+        db2 = (1/m) * np.sum(dZ2, axis=0, keepdims=True)
+        
+        # Hidden layer gradients
+        dA1 = np.dot(dZ2, self.W2.T)
+        dZ1 = dA1 * self.sigmoid_derivative(self.a1)
+        dW1 = (1/m) * np.dot(X.T, dZ1)
+        db1 = (1/m) * np.sum(dZ1, axis=0, keepdims=True)
+        
+        # Update weights
+        self.W1 -= self.learning_rate * dW1
+        self.b1 -= self.learning_rate * db1.flatten()
+        self.W2 -= self.learning_rate * dW2
+        self.b2 -= self.learning_rate * db2.flatten()
+    
+    def train(self, X, epochs=50, callback=None):
+        # Ensure X is 2D
+        if X.ndim == 1:
+            X = X.reshape(1, -1)
+        
+        for epoch in range(epochs):
+            # Forward pass
+            output = self.forward(X)
+            
+            # Calculate loss (MSE)
+            loss = np.mean((X - output) ** 2)
+            self.training_losses.append(loss)
+            
+            # Backward pass
+            self.backward(X, output)
+            
+            # Callback for GUI updates (less frequent for speed)
+            if callback and epoch % 10 == 0:
+                callback(epoch, loss)
+    
+    def encode(self, X):
+        """Get latent representation"""
+        if X.ndim == 1:
+            X = X.reshape(1, -1)
+        z1 = np.dot(X, self.W1) + self.b1
+        return self.sigmoid(z1)
+    
+    def decode(self, latent):
+        """Reconstruct from latent representation"""
+        if latent.ndim == 1:
+            latent = latent.reshape(1, -1)
+        z2 = np.dot(latent, self.W2) + self.b2
+        return self.sigmoid(z2)
+
+class StateVectorInterpreter:
+    def __init__(self, app_instance):
+        """Initialize with reference to the main app"""
+        self.app = app_instance
+        
+    def normalize_data(self, data):
+        """Normalize data to [0, 1] range"""
+        data_min = data.min()
+        data_max = data.max()
+        if data_max == data_min:
+            return np.ones_like(data) * 0.5
+        return (data - data_min) / (data_max - data_min)
+    
+    def get_feature_type(self, column):
+        """Determine feature type for a column"""
+        if 'price' in column.lower():
+            return 'price_features'
+        elif 'volume' in column.lower() or 'reviews' in column.lower():
+            return 'volume_features'
+        elif 'ratio' in column.lower() or 'rating' in column.lower():
+            return 'rating_features'
+        else:
+            return 'score_features'
+    
+    def generate_detailed_state_vector(self, dataset, dataset_name):
+        """Generate state vector with detailed breakdown for interpretation"""
+        if not self.app.feature_autoencoders or not self.app.row_autoencoder:
+            return None
+            
+        self.app.log_progress(f"\n🔍 ANALYZING {dataset_name.upper()} STATE VECTOR")
+        self.app.log_progress("=" * 50)
+        
+        # Step 1: Feature-level analysis
+        feature_analysis = {}
+        latent_vectors = []
+        
+        for column in dataset.columns:
+            column_data = self.normalize_data(dataset[column])
+            feature_type = self.get_feature_type(column)
+            
+            autoencoder = self.app.feature_autoencoders[feature_type]
+            latent_repr = autoencoder.encode(column_data.values.reshape(1, -1))[0]
+            latent_vectors.append(latent_repr)
+            
+            # Analyze what each latent dimension represents
+            feature_analysis[column] = {
+                'latent_vector': latent_repr,
+                'feature_type': feature_type,
+                'original_stats': {
+                    'mean': np.mean(column_data),
+                    'std': np.std(column_data),
+                    'min': np.min(column_data),
+                    'max': np.max(column_data)
+                },
+                'interpretation': self.interpret_feature_latent(latent_repr, column)
+            }
+            
+            self.app.log_progress(f"  {column:15} -> {feature_analysis[column]['interpretation']}")
+        
+        # Step 2: Row-level analysis
+        latent_matrix = np.array(latent_vectors).T
+        row_analysis = {}
+        static_encoded_matrix = []
+        
+        for i, row in enumerate(latent_matrix):
+            compressed_row = self.app.row_autoencoder.encode(row.reshape(1, -1))[0]
+            static_encoded_matrix.append(compressed_row)
+            
+            row_analysis[f'pattern_{i}'] = {
+                'original_row': row,
+                'compressed_row': compressed_row,
+                'interpretation': self.interpret_row_latent(compressed_row, i)
+            }
+            
+            self.app.log_progress(f"  Pattern {i}: {row_analysis[f'pattern_{i}']['interpretation']}")
+        
+        # Step 3: Final state vector
+        state_vector = np.array(static_encoded_matrix).flatten()
+        overall_interpretation = self.interpret_final_vector(state_vector, dataset_name)
+        
+        self.app.log_progress(f"\n📊 OVERALL INTERPRETATION:")
+        self.app.log_progress(f"  {overall_interpretation}")
+        
+        return {
+            'state_vector': state_vector,
+            'feature_analysis': feature_analysis,
+            'row_analysis': row_analysis,
+            'overall_interpretation': overall_interpretation,
+            'dataset_name': dataset_name
+        }
+    
+    def interpret_feature_latent(self, latent_vector, column_name):
+        """Interpret what a feature's latent vector means"""
+        dim0, dim1, dim2 = latent_vector
+        
+        level = "High" if dim0 > 0.6 else "Low" if dim0 < 0.4 else "Medium"
+        variability = "High" if dim1 > 0.6 else "Low" if dim1 < 0.4 else "Medium"
+        complexity = "Complex" if dim2 > 0.6 else "Simple" if dim2 < 0.4 else "Moderate"
+        
+        return f"{level} magnitude, {variability} variability, {complexity} pattern"
+    
+    def interpret_row_latent(self, compressed_row, row_index):
+        """Interpret what a row's compressed representation means"""
+        dim0, dim1 = compressed_row
+        
+        if row_index == 0:  # First latent dimension across features
+            correlation = "Strong" if dim0 > 0.6 else "Weak" if dim0 < 0.4 else "Moderate"
+            alignment = "High" if dim1 > 0.6 else "Low" if dim1 < 0.4 else "Medium"
+            return f"{correlation} feature correlation, {alignment} alignment"
+        elif row_index == 1:  # Second latent dimension across features
+            consistency = "High" if dim0 > 0.6 else "Low" if dim0 < 0.4 else "Medium"
+            interdependence = "Strong" if dim1 > 0.6 else "Weak" if dim1 < 0.4 else "Moderate"
+            return f"{consistency} consistency, {interdependence} interdependence"
+        else:  # Third latent dimension across features
+            complexity = "High" if dim0 > 0.6 else "Low" if dim0 < 0.4 else "Medium"
+            uniqueness = "Unique" if dim1 > 0.6 else "Common" if dim1 < 0.4 else "Mixed"
+            return f"{complexity} complexity, {uniqueness} patterns"
+    
+    def interpret_final_vector(self, state_vector, dataset_name):
+        """Interpret the final 6-dimensional state vector"""
+        magnitude_signature = np.mean(state_vector[:2])
+        variability_signature = np.mean(state_vector[2:4])
+        complexity_signature = np.mean(state_vector[4:6])
+        
+        if magnitude_signature > 0.6:
+            mag_desc = f"{dataset_name} has strong, dominant feature values"
+        elif magnitude_signature < 0.4:
+            mag_desc = f"{dataset_name} has moderate, balanced feature values"
+        else:
+            mag_desc = f"{dataset_name} has mixed feature magnitudes"
+        
+        if variability_signature > 0.6:
+            var_desc = "high variability and dynamic patterns"
+        elif variability_signature < 0.4:
+            var_desc = "low variability and stable patterns"
+        else:
+            var_desc = "moderate variability with some trends"
+        
+        if complexity_signature > 0.6:
+            comp_desc = "complex, diverse feature relationships"
+        elif complexity_signature < 0.4:
+            comp_desc = "simple, uniform feature relationships"
+        else:
+            comp_desc = "moderately complex feature relationships"
+        
+        return f"{mag_desc} with {var_desc} and {comp_desc}"
+    
+    def create_interpretation_window(self):
+        """Create a new window showing state vector interpretation"""
+        if not self.app.feature_autoencoders or not self.app.row_autoencoder:
+            messagebox.showerror("Error", "Please train autoencoders first!")
+            return
+        
+        # Create interpretation window
+        self.interp_window = tk.Toplevel(self.app.root)
+        self.interp_window.title("State Vector Interpretation")
+        self.interp_window.geometry("1000x700")
+        self.interp_window.transient(self.app.root)  # Make window modal-like
+        self.interp_window.grab_set()  # Make window stay on top
+        
+        # Generate interpretations
+        fin_analysis = self.generate_detailed_state_vector(self.app.financial_data, "Financial")
+        ecom_analysis = self.generate_detailed_state_vector(self.app.ecommerce_data, "E-commerce")
+        
+        if not fin_analysis or not ecom_analysis:
+            messagebox.showerror("Error", "Could not generate interpretations!")
+            self.interp_window.destroy()
+            return
+        
+        # Create notebook for different views
+        notebook = ttk.Notebook(self.interp_window)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Tab 1: Textual Interpretation
+        text_frame = ttk.Frame(notebook)
+        notebook.add(text_frame, text="Detailed Analysis")
+        
+        text_widget = tk.Text(text_frame, wrap=tk.WORD, font=('Courier', 10))
+        text_scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=text_widget.yview)
+        text_widget.configure(yscrollcommand=text_scrollbar.set)
+        text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        text_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Add interpretation text
+        self.add_interpretation_text(text_widget, fin_analysis, ecom_analysis)
+        
+        # Tab 2: Visual Comparison
+        visual_frame = ttk.Frame(notebook)
+        notebook.add(visual_frame, text="Visual Comparison")
+        
+        # Create visualization
+        self.create_comparison_plot(visual_frame, fin_analysis, ecom_analysis)
+        
+        # Tab 3: Feature Breakdown
+        breakdown_frame = ttk.Frame(notebook)
+        notebook.add(breakdown_frame, text="Feature Breakdown")
+        
+        self.create_breakdown_plot(breakdown_frame, fin_analysis, ecom_analysis)
+        
+        # Add close button
+        button_frame = ttk.Frame(self.interp_window)
+        button_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Button(button_frame, text="Close", command=self.interp_window.destroy).pack(side=tk.RIGHT)
+        
+        # Center the window
+        self.interp_window.update_idletasks()
+        x = (self.interp_window.winfo_screenwidth() // 2) - (self.interp_window.winfo_width() // 2)
+        y = (self.interp_window.winfo_screenheight() // 2) - (self.interp_window.winfo_height() // 2)
+        self.interp_window.geometry(f"+{x}+{y}")
+        
+        self.app.log_progress("\n🎉 Interpretation window opened successfully!")
+    
+    def add_interpretation_text(self, text_widget, fin_analysis, ecom_analysis):
+        """Add detailed interpretation text"""
+        content = f"""STATE VECTOR INTERPRETATION REPORT
+{'='*60}
+
+FINANCIAL DATASET ANALYSIS:
+{'-'*30}
+State Vector: [{', '.join([f'{x:.3f}' for x in fin_analysis['state_vector']])}]
+Overall: {fin_analysis['overall_interpretation']}
+
+Feature-Level Breakdown:
+"""
+        
+        for feature, analysis in fin_analysis['feature_analysis'].items():
+            content += f"• {feature}: {analysis['interpretation']}\n"
+            content += f"  Latent: [{', '.join([f'{x:.3f}' for x in analysis['latent_vector']])}]\n"
+        
+        content += f"""
+Row-Level Patterns:
+"""
+        for pattern, analysis in fin_analysis['row_analysis'].items():
+            content += f"• {pattern}: {analysis['interpretation']}\n"
+        
+        content += f"""
+
+E-COMMERCE DATASET ANALYSIS:
+{'-'*30}
+State Vector: [{', '.join([f'{x:.3f}' for x in ecom_analysis['state_vector']])}]
+Overall: {ecom_analysis['overall_interpretation']}
+
+Feature-Level Breakdown:
+"""
+        
+        for feature, analysis in ecom_analysis['feature_analysis'].items():
+            content += f"• {feature}: {analysis['interpretation']}\n"
+            content += f"  Latent: [{', '.join([f'{x:.3f}' for x in analysis['latent_vector']])}]\n"
+        
+        content += f"""
+Row-Level Patterns:
+"""
+        for pattern, analysis in ecom_analysis['row_analysis'].items():
+            content += f"• {pattern}: {analysis['interpretation']}\n"
+        
+        # Compare datasets
+        euclidean_dist = np.linalg.norm(fin_analysis['state_vector'] - ecom_analysis['state_vector'])
+        cosine_sim = np.dot(fin_analysis['state_vector'], ecom_analysis['state_vector']) / (
+            np.linalg.norm(fin_analysis['state_vector']) * np.linalg.norm(ecom_analysis['state_vector'])
+        )
+        
+        content += f"""
+
+DATASET COMPARISON:
+{'-'*30}
+• Euclidean Distance: {euclidean_dist:.4f} (lower = more similar)
+• Cosine Similarity: {cosine_sim:.4f} (higher = more similar)
+
+INTERPRETATION KEY:
+{'-'*30}
+• High values (>0.6): Strong patterns, high variability, complex relationships
+• Medium values (0.4-0.6): Moderate patterns, balanced characteristics
+• Low values (<0.4): Weak patterns, low variability, simple relationships
+
+The state vector captures three levels:
+1. Feature-level: Individual feature patterns
+2. Row-level: Cross-feature relationships
+3. Final: Complete dataset signature for comparison
+"""
+        
+        text_widget.insert(tk.END, content)
+        text_widget.config(state=tk.DISABLED)
+    
+    def create_comparison_plot(self, parent_frame, fin_analysis, ecom_analysis):
+        """Create visual comparison of state vectors"""
+        try:
+            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 8))
+            fig.suptitle('State Vector Interpretation Visualization', fontsize=14, fontweight='bold')
+            
+            # Plot 1: State vector comparison
+            dimensions = range(6)
+            ax1.bar([d-0.2 for d in dimensions], fin_analysis['state_vector'], 
+                    width=0.4, label='Financial', alpha=0.7, color='blue')
+            ax1.bar([d+0.2 for d in dimensions], ecom_analysis['state_vector'], 
+                    width=0.4, label='E-commerce', alpha=0.7, color='orange')
+            ax1.set_xlabel('Dimension')
+            ax1.set_ylabel('Value')
+            ax1.set_title('State Vector Comparison')
+            ax1.legend()
+            ax1.set_xticks(dimensions)
+            ax1.grid(True, alpha=0.3)
+            
+            # Plot 2: Feature latent dimensions
+            fin_features = list(fin_analysis['feature_analysis'].keys())
+            fin_latents = [analysis['latent_vector'] for analysis in fin_analysis['feature_analysis'].values()]
+            
+            im1 = ax2.imshow(np.array(fin_latents).T, cmap='viridis', aspect='auto')
+            ax2.set_title('Financial Features Latent Space')
+            ax2.set_xlabel('Features')
+            ax2.set_ylabel('Latent Dimensions')
+            ax2.set_xticks(range(len(fin_features)))
+            ax2.set_xticklabels([f[:8] for f in fin_features], rotation=45)
+            plt.colorbar(im1, ax=ax2, shrink=0.8)
+            
+            # Plot 3: E-commerce feature latent dimensions
+            ecom_features = list(ecom_analysis['feature_analysis'].keys())
+            ecom_latents = [analysis['latent_vector'] for analysis in ecom_analysis['feature_analysis'].values()]
+            
+            im2 = ax3.imshow(np.array(ecom_latents).T, cmap='viridis', aspect='auto')
+            ax3.set_title('E-commerce Features Latent Space')
+            ax3.set_xlabel('Features')
+            ax3.set_ylabel('Latent Dimensions')
+            ax3.set_xticks(range(len(ecom_features)))
+            ax3.set_xticklabels([f[:8] for f in ecom_features], rotation=45)
+            plt.colorbar(im2, ax=ax3, shrink=0.8)
+            
+            # Plot 4: Radar chart
+            angles = np.linspace(0, 2*np.pi, 6, endpoint=False).tolist()
+            angles += angles[:1]
+            
+            fin_values = fin_analysis['state_vector'].tolist() + [fin_analysis['state_vector'][0]]
+            ecom_values = ecom_analysis['state_vector'].tolist() + [ecom_analysis['state_vector'][0]]
+            
+            ax4 = plt.subplot(2, 2, 4, projection='polar')
+            ax4.plot(angles, fin_values, 'o-', linewidth=2, label='Financial', color='blue')
+            ax4.fill(angles, fin_values, alpha=0.25, color='blue')
+            ax4.plot(angles, ecom_values, 'o-', linewidth=2, label='E-commerce', color='orange') 
+            ax4.fill(angles, ecom_values, alpha=0.25, color='orange')
+            ax4.set_xticks(angles[:-1])
+            ax4.set_xticklabels([f'Dim {i}' for i in range(6)])
+            ax4.set_title('State Vector Radar Chart')
+            ax4.legend()
+            
+            plt.tight_layout()
+            
+            # Embed plot in tkinter
+            canvas = FigureCanvasTkAgg(fig, parent_frame)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            
+        except Exception as e:
+            error_label = tk.Label(parent_frame, text=f"Error creating plot: {str(e)}", fg="red")
+            error_label.pack(pady=20)
+    
+    def create_breakdown_plot(self, parent_frame, fin_analysis, ecom_analysis):
+        """Create detailed feature breakdown visualization"""
+        try:
+            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 8))
+            fig.suptitle('Feature-Level Interpretation Breakdown', fontsize=14, fontweight='bold')
+            
+            # Financial feature contributions
+            fin_features = list(fin_analysis['feature_analysis'].keys())
+            fin_contributions = np.array([analysis['latent_vector'] for analysis in fin_analysis['feature_analysis'].values()])
+            
+            x = np.arange(len(fin_features))
+            width = 0.25
+            
+            ax1.bar(x - width, fin_contributions[:, 0], width, label='Magnitude', alpha=0.8)
+            ax1.bar(x, fin_contributions[:, 1], width, label='Variability', alpha=0.8)
+            ax1.bar(x + width, fin_contributions[:, 2], width, label='Complexity', alpha=0.8)
+            
+            ax1.set_xlabel('Features')
+            ax1.set_ylabel('Latent Value')
+            ax1.set_title('Financial: Feature Latent Contributions')
+            ax1.set_xticks(x)
+            ax1.set_xticklabels([f[:8] for f in fin_features], rotation=45)
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            
+            # E-commerce feature contributions
+            ecom_features = list(ecom_analysis['feature_analysis'].keys())
+            ecom_contributions = np.array([analysis['latent_vector'] for analysis in ecom_analysis['feature_analysis'].values()])
+            
+            x2 = np.arange(len(ecom_features))
+            
+            ax2.bar(x2 - width, ecom_contributions[:, 0], width, label='Magnitude', alpha=0.8)
+            ax2.bar(x2, ecom_contributions[:, 1], width, label='Variability', alpha=0.8)
+            ax2.bar(x2 + width, ecom_contributions[:, 2], width, label='Complexity', alpha=0.8)
+            
+            ax2.set_xlabel('Features')
+            ax2.set_ylabel('Latent Value')
+            ax2.set_title('E-commerce: Feature Latent Contributions')
+            ax2.set_xticks(x2)
+            ax2.set_xticklabels([f[:8] for f in ecom_features], rotation=45)
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            
+            # Cross-feature pattern analysis
+            fin_patterns = np.array([analysis['compressed_row'] for analysis in fin_analysis['row_analysis'].values()])
+            ecom_patterns = np.array([analysis['compressed_row'] for analysis in ecom_analysis['row_analysis'].values()])
+            
+            pattern_labels = ['Correlation\nAlignment', 'Consistency\nInterdependence', 'Complexity\nUniqueness']
+            
+            x3 = np.arange(len(pattern_labels))
+            
+            ax3.bar(x3 - 0.2, fin_patterns[:, 0], 0.4, label='Financial Dim 0', alpha=0.7)
+            ax3.bar(x3 + 0.2, fin_patterns[:, 1], 0.4, label='Financial Dim 1', alpha=0.7)
+            
+            ax3.set_xlabel('Pattern Type')
+            ax3.set_ylabel('Compressed Value')
+            ax3.set_title('Financial: Cross-Feature Patterns')
+            ax3.set_xticks(x3)
+            ax3.set_xticklabels(pattern_labels)
+            ax3.legend()
+            ax3.grid(True, alpha=0.3)
+            
+            ax4.bar(x3 - 0.2, ecom_patterns[:, 0], 0.4, label='E-commerce Dim 0', alpha=0.7, color='orange')
+            ax4.bar(x3 + 0.2, ecom_patterns[:, 1], 0.4, label='E-commerce Dim 1', alpha=0.7, color='red')
+            
+            ax4.set_xlabel('Pattern Type')
+            ax4.set_ylabel('Compressed Value')
+            ax4.set_title('E-commerce: Cross-Feature Patterns')
+            ax4.set_xticks(x3)
+            ax4.set_xticklabels(pattern_labels)
+            ax4.legend()
+            ax4.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            
+            # Embed plot in tkinter
+            canvas = FigureCanvasTkAgg(fig, parent_frame)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            
+        except Exception as e:
+            error_label = tk.Label(parent_frame, text=f"Error creating breakdown plot: {str(e)}", fg="red")
+            error_label.pack(pady=20)
+
+class AutoencoderApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Autoencoder Training Demo - With Interpretation")
+        self.root.geometry("1200x800")
+        
+        # Initialize data
+        self.financial_data = None
+        self.ecommerce_data = None
+        self.feature_autoencoders = {}
+        self.row_autoencoder = None
+        self.latent_matrix = None
+        
+        # Initialize interpreter
+        self.interpreter = StateVectorInterpreter(self)
+        
+        self.setup_ui()
+        self.generate_sample_data()
+    
+    def setup_ui(self):
+        # Menu bar
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+        
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="Load Financial Data", command=self.load_financial_data)
+        file_menu.add_command(label="Load E-commerce Data", command=self.load_ecommerce_data)
+        file_menu.add_separator()
+        file_menu.add_command(label="Save Results", command=self.save_results)
+        file_menu.add_command(label="Exit", command=self.root.quit)
+        
+        # Main frame
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Left panel - Data and Controls
+        left_frame = ttk.Frame(main_frame)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        
+        # Data display frame
+        data_frame = ttk.LabelFrame(left_frame, text="Sample Data")
+        data_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        
+        # Data notebook
+        self.data_notebook = ttk.Notebook(data_frame)
+        self.data_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Financial data tab
+        self.financial_frame = ttk.Frame(self.data_notebook)
+        self.data_notebook.add(self.financial_frame, text="Financial Data")
+        
+        self.financial_text = tk.Text(self.financial_frame, height=10, font=('Courier', 9))
+        financial_scrollbar = ttk.Scrollbar(self.financial_frame, orient="vertical", command=self.financial_text.yview)
+        self.financial_text.configure(yscrollcommand=financial_scrollbar.set)
+        self.financial_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        financial_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # E-commerce data tab
+        self.ecommerce_frame = ttk.Frame(self.data_notebook)
+        self.data_notebook.add(self.ecommerce_frame, text="E-commerce Data")
+        
+        self.ecommerce_text = tk.Text(self.ecommerce_frame, height=10, font=('Courier', 9))
+        ecommerce_scrollbar = ttk.Scrollbar(self.ecommerce_frame, orient="vertical", command=self.ecommerce_text.yview)
+        self.ecommerce_text.configure(yscrollcommand=ecommerce_scrollbar.set)
+        self.ecommerce_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        ecommerce_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Control buttons frame
+        self.control_frame = ttk.LabelFrame(left_frame, text="Training Controls")
+        self.control_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        button_frame1 = ttk.Frame(self.control_frame)
+        button_frame1.pack(fill=tk.X, padx=5, pady=2)
+        
+        ttk.Button(button_frame1, text="1. Generate Sample Data", command=self.generate_sample_data).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(button_frame1, text="2. Train Feature Autoencoders", command=self.train_feature_autoencoders).pack(side=tk.LEFT, padx=(0, 5))
+        
+        button_frame2 = ttk.Frame(self.control_frame)
+        button_frame2.pack(fill=tk.X, padx=5, pady=2)
+        
+        ttk.Button(button_frame2, text="3. Train Row Autoencoder", command=self.train_row_autoencoder).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(button_frame2, text="4. Generate State Vector", command=self.generate_state_vector).pack(side=tk.LEFT, padx=(0, 5))
+        
+        button_frame3 = ttk.Frame(self.control_frame)
+        button_frame3.pack(fill=tk.X, padx=5, pady=2)
+        
+        ttk.Button(button_frame3, text="🚀 Run All Steps", command=self.run_all_steps).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(button_frame3, text="🔄 Reset", command=self.reset_training).pack(side=tk.LEFT, padx=(0, 5))
+        
+        # NEW: Interpretation button
+        button_frame4 = ttk.Frame(self.control_frame)
+        button_frame4.pack(fill=tk.X, padx=5, pady=2)
+        
+        interpretation_btn = ttk.Button(button_frame4, text="🔍 Interpret State Vectors", 
+                                       command=self.show_interpretation)
+        interpretation_btn.pack(side=tk.LEFT, padx=(0, 5))
+        
+        # Right panel - Training Progress and Results
+        right_frame = ttk.Frame(main_frame)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        
+        # Training progress frame
+        progress_frame = ttk.LabelFrame(right_frame, text="Training Progress")
+        progress_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        
+        self.progress_text = tk.Text(progress_frame, height=15, font=('Courier', 9))
+        progress_scrollbar = ttk.Scrollbar(progress_frame, orient="vertical", command=self.progress_text.yview)
+        self.progress_text.configure(yscrollcommand=progress_scrollbar.set)
+        self.progress_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        progress_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Results frame
+        results_frame = ttk.LabelFrame(right_frame, text="Results")
+        results_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.results_text = tk.Text(results_frame, height=10, font=('Courier', 9))
+        results_scrollbar = ttk.Scrollbar(results_frame, orient="vertical", command=self.results_text.yview)
+        self.results_text.configure(yscrollcommand=results_scrollbar.set)
+        self.results_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        results_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    
+    def show_interpretation(self):
+        """Show state vector interpretation window"""
+        try:
+            self.interpreter.create_interpretation_window()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to create interpretation window: {str(e)}")
+            self.log_progress(f"❌ Error creating interpretation: {str(e)}")
+    
+    def generate_sample_data(self):
+        """Generate sample financial and e-commerce datasets"""
+        self.log_progress("Generating sample datasets...")
+        
+        # Financial Dataset (smaller for faster training)
+        np.random.seed(42)
+        n_samples = 12  # Reduced for faster training
+        
+        financial_data = {
+            'stock_price': np.random.uniform(20, 100, n_samples),
+            'volume': np.random.uniform(1000, 5000, n_samples),
+            'market_cap': np.random.uniform(1e9, 1e11, n_samples),
+            'pe_ratio': np.random.uniform(5, 30, n_samples)
+        }
+        
+        # E-commerce Dataset  
+        ecommerce_data = {
+            'product_price': np.random.uniform(10, 500, n_samples),
+            'rating': np.random.uniform(1, 5, n_samples),
+            'num_reviews': np.random.uniform(0, 1000, n_samples),
+            'category_score': np.random.uniform(0, 10, n_samples)
+        }
+        
+        self.financial_data = pd.DataFrame(financial_data)
+        self.ecommerce_data = pd.DataFrame(ecommerce_data)
+        
+        # Display data
+        self.display_data()
+        self.log_progress("✓ Sample data generated successfully!")
+        self.log_progress(f"  Financial data shape: {self.financial_data.shape}")
+        self.log_progress(f"  E-commerce data shape: {self.ecommerce_data.shape}")
+    
+    def display_data(self):
+        """Display the datasets in the GUI"""
+        # Clear previous data
+        self.financial_text.delete(1.0, tk.END)
+        self.ecommerce_text.delete(1.0, tk.END)
+        
+        # Display financial data
+        self.financial_text.insert(tk.END, "Financial Dataset:\n")
+        self.financial_text.insert(tk.END, "=" * 50 + "\n")
+        self.financial_text.insert(tk.END, self.financial_data.round(2).to_string())
+        self.financial_text.insert(tk.END, f"\n\nShape: {self.financial_data.shape}")
+        
+        # Display e-commerce data
+        self.ecommerce_text.insert(tk.END, "E-commerce Dataset:\n")
+        self.ecommerce_text.insert(tk.END, "=" * 50 + "\n")
+        self.ecommerce_text.insert(tk.END, self.ecommerce_data.round(2).to_string())
+        self.ecommerce_text.insert(tk.END, f"\n\nShape: {self.ecommerce_data.shape}")
+    
+    def normalize_data(self, data):
+        """Normalize data to [0, 1] range"""
+        data_min = data.min()
+        data_max = data.max()
+        if data_max == data_min:
+            return np.ones_like(data) * 0.5  # Handle constant data
+        return (data - data_min) / (data_max - data_min)
+    
+    def train_feature_autoencoders(self):
+        """Train autoencoders for each feature type"""
+        if self.financial_data is None or self.ecommerce_data is None:
+            messagebox.showerror("Error", "Please generate sample data first!")
+            return
+        
+        self.log_progress("\n" + "="*60)
+        self.log_progress("TRAINING FEATURE AUTOENCODERS")
+        self.log_progress("="*60)
+        
+        # Get the number of samples (should be consistent across datasets)
+        n_samples = len(self.financial_data)
+        
+        # Group similar features from both datasets
+        feature_groups = {
+            'price_features': [
+                self.normalize_data(self.financial_data['stock_price']),
+                self.normalize_data(self.ecommerce_data['product_price'])
+            ],
+            'volume_features': [
+                self.normalize_data(self.financial_data['volume']),
+                self.normalize_data(self.ecommerce_data['num_reviews'])
+            ],
+            'rating_features': [
+                self.normalize_data(self.financial_data['pe_ratio']),
+                self.normalize_data(self.ecommerce_data['rating'])
+            ],
+            'score_features': [
+                self.normalize_data(self.financial_data['market_cap']),
+                self.normalize_data(self.ecommerce_data['category_score'])
+            ]
+        }
+        
+        self.feature_autoencoders = {}
+        
+        for feature_type, feature_list in feature_groups.items():
+            self.log_progress(f"\nTraining {feature_type} autoencoder...")
+            
+            # Stack features as rows (each feature becomes a training sample)
+            training_data = np.vstack(feature_list)  # Shape: (num_features, n_samples)
+            
+            self.log_progress(f"  Training data shape: {training_data.shape}")
+            
+            # Create and train autoencoder
+            autoencoder = SimpleAutoencoder(input_dim=n_samples, latent_dim=3, learning_rate=0.1)
+            
+            def training_callback(epoch, loss):
+                if epoch % 10 == 0:
+                    self.log_progress(f"  Epoch {epoch}: Loss = {loss:.6f}")
+                self.root.update_idletasks()  # Faster GUI update
+            
+            # Train with fewer epochs for speed
+            autoencoder.train(training_data, epochs=50, callback=training_callback)
+            self.feature_autoencoders[feature_type] = autoencoder
+            
+            self.log_progress(f"  ✓ Final loss: {autoencoder.training_losses[-1]:.6f}")
+        
+        self.log_progress(f"\n✓ Feature autoencoders training completed!")
+        self.log_progress(f"  Trained {len(self.feature_autoencoders)} feature-type autoencoders")
+    
+    def train_row_autoencoder(self):
+        """Train autoencoder for row-wise compression"""
+        if not self.feature_autoencoders:
+            messagebox.showerror("Error", "Please train feature autoencoders first!")
+            return
+        
+        self.log_progress("\n" + "="*60)
+        self.log_progress("TRAINING ROW AUTOENCODER")
+        self.log_progress("="*60)
+        
+        # Create latent matrices from both datasets
+        latent_rows = []
+        
+        for dataset_name, dataset in [("Financial", self.financial_data), ("E-commerce", self.ecommerce_data)]:
+            self.log_progress(f"\nProcessing {dataset_name} dataset...")
+            
+            # Apply feature autoencoders to each column
+            dataset_latent_vectors = []
+            
+            for column in dataset.columns:
+                # Normalize column data
+                column_data = self.normalize_data(dataset[column])
+                
+                # Determine feature type and apply appropriate autoencoder
+                if 'price' in column.lower():
+                    feature_type = 'price_features'
+                elif 'volume' in column.lower() or 'reviews' in column.lower():
+                    feature_type = 'volume_features'
+                elif 'ratio' in column.lower() or 'rating' in column.lower():
+                    feature_type = 'rating_features'
+                else:
+                    feature_type = 'score_features'
+                
+                # Get latent representation
+                autoencoder = self.feature_autoencoders[feature_type]
+                latent_repr = autoencoder.encode(column_data.values.reshape(1, -1))[0]
+                dataset_latent_vectors.append(latent_repr)
+                
+                self.log_progress(f"  {column} -> {feature_type} -> latent: [{', '.join([f'{x:.3f}' for x in latent_repr])}]")
+            
+            # Create latent matrix (k × n_features) then transpose to get rows
+            dataset_latent_matrix = np.array(dataset_latent_vectors).T  # Shape: (3, n_features)
+            
+            # Add each row to training data
+            for row in dataset_latent_matrix:
+                latent_rows.append(row)
+        
+        # Train row autoencoder
+        self.log_progress(f"\nTraining row autoencoder on {len(latent_rows)} latent rows...")
+        latent_rows = np.array(latent_rows)
+        self.log_progress(f"  Latent rows shape: {latent_rows.shape}")
+        
+        self.row_autoencoder = SimpleAutoencoder(input_dim=latent_rows.shape[1], latent_dim=2, learning_rate=0.1)
+        
+        def row_training_callback(epoch, loss):
+            if epoch % 10 == 0:
+                self.log_progress(f"  Epoch {epoch}: Loss = {loss:.6f}")
+            self.root.update_idletasks()
+        
+        self.row_autoencoder.train(latent_rows, epochs=50, callback=row_training_callback)
+        
+        self.log_progress(f"  ✓ Final loss: {self.row_autoencoder.training_losses[-1]:.6f}")
+        self.log_progress(f"\n✓ Row autoencoder training completed!")
+    
+    def generate_state_vector(self):
+        """Generate fixed-length state vectors for both datasets"""
+        if not self.feature_autoencoders or not self.row_autoencoder:
+            messagebox.showerror("Error", "Please train all autoencoders first!")
+            return
+        
+        self.log_progress("\n" + "="*60)
+        self.log_progress("GENERATING FIXED-LENGTH STATE VECTORS")
+        self.log_progress("="*60)
+        
+        self.results_text.delete(1.0, tk.END)
+        
+        for dataset_name, dataset in [("Financial", self.financial_data), ("E-commerce", self.ecommerce_data)]:
+            self.log_progress(f"\nProcessing {dataset_name} dataset...")
+            
+            # Step 1: Apply feature autoencoders
+            latent_vectors = []
+            
+            for column in dataset.columns:
+                column_data = self.normalize_data(dataset[column])
+                
+                # Determine feature type
+                if 'price' in column.lower():
+                    feature_type = 'price_features'
+                elif 'volume' in column.lower() or 'reviews' in column.lower():
+                    feature_type = 'volume_features'
+                elif 'ratio' in column.lower() or 'rating' in column.lower():
+                    feature_type = 'rating_features'
+                else:
+                    feature_type = 'score_features'
+                
+                # Get latent representation (fixed: proper reshaping)
+                autoencoder = self.feature_autoencoders[feature_type]
+                latent_repr = autoencoder.encode(column_data.values.reshape(1, -1))[0]
+                latent_vectors.append(latent_repr)
+            
+            latent_matrix = np.array(latent_vectors).T  # k×n_features
+            
+            # Step 2: Apply row autoencoder
+            static_encoded_matrix = []
+            for row in latent_matrix:
+                compressed_row = self.row_autoencoder.encode(row.reshape(1, -1))[0]
+                static_encoded_matrix.append(compressed_row)
+            
+            static_encoded_matrix = np.array(static_encoded_matrix)
+            
+            # Step 3: Flatten to final state vector
+            state_vector = static_encoded_matrix.flatten()
+            
+            # Display results
+            self.results_text.insert(tk.END, f"{dataset_name} Dataset Results:\n")
+            self.results_text.insert(tk.END, "-" * 40 + "\n")
+            self.results_text.insert(tk.END, f"Original shape: {dataset.shape}\n")
+            self.results_text.insert(tk.END, f"Latent matrix shape: {latent_matrix.shape}\n")
+            self.results_text.insert(tk.END, f"Static encoded matrix shape: {static_encoded_matrix.shape}\n")
+            self.results_text.insert(tk.END, f"Final state vector length: {len(state_vector)}\n")
+            self.results_text.insert(tk.END, f"State vector: [{', '.join([f'{x:.3f}' for x in state_vector])}]\n\n")
+            
+            self.log_progress(f"  ✓ {dataset.shape[1]} features -> {len(state_vector)}-length vector")
+        
+        self.log_progress(f"\n🎉 SUCCESS! Both datasets now have FIXED-LENGTH representations!")
+        self.log_progress(f"   No matter how many features you start with, you always get 6-dimensional vectors!")
+        self.log_progress(f"\n💡 Click '🔍 Interpret State Vectors' to understand what these numbers mean!")
+    
+    def run_all_steps(self):
+        """Run all training steps automatically"""
+        try:
+            self.log_progress("\n🚀 RUNNING ALL STEPS AUTOMATICALLY...")
+            self.log_progress("=" * 60)
+            
+            if self.financial_data is None:
+                self.generate_sample_data()
+            
+            self.train_feature_autoencoders()
+            self.train_row_autoencoder() 
+            self.generate_state_vector()
+            
+            self.log_progress("\n🎉 ALL STEPS COMPLETED SUCCESSFULLY!")
+            self.log_progress("💡 Now click '🔍 Interpret State Vectors' to see what the results mean!")
+            messagebox.showinfo("Success", "Autoencoder training completed successfully!\nClick '🔍 Interpret State Vectors' to understand the results.")
+            
+        except Exception as e:
+            self.log_progress(f"\n❌ ERROR: {str(e)}")
+            messagebox.showerror("Error", f"Training failed: {str(e)}")
+    
+    def reset_training(self):
+        """Reset all training progress"""
+        self.feature_autoencoders = {}
+        self.row_autoencoder = None
+        self.latent_matrix = None
+        
+        self.progress_text.delete(1.0, tk.END)
+        self.results_text.delete(1.0, tk.END)
+        
+        self.log_progress("🔄 Training reset. Ready to start fresh!")
+    
+    def log_progress(self, message):
+        """Log message to progress text widget"""
+        self.progress_text.insert(tk.END, message + "\n")
+        self.progress_text.see(tk.END)
+        self.root.update_idletasks()  # Faster than update()
+    
+    def load_financial_data(self):
+        """Load financial data from file"""
+        filename = filedialog.askopenfilename(
+            title="Load Financial Data",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        if filename:
+            try:
+                self.financial_data = pd.read_csv(filename)
+                self.display_data()
+                self.log_progress(f"✓ Loaded financial data from {filename}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load data: {str(e)}")
+    
+    def load_ecommerce_data(self):
+        """Load e-commerce data from file"""
+        filename = filedialog.askopenfilename(
+            title="Load E-commerce Data",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        if filename:
+            try:
+                self.ecommerce_data = pd.read_csv(filename)
+                self.display_data()
+                self.log_progress(f"✓ Loaded e-commerce data from {filename}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load data: {str(e)}")
+    
+    def save_results(self):
+        """Save training results to file"""
+        if not self.feature_autoencoders and not self.row_autoencoder:
+            messagebox.showwarning("Warning", "No results to save!")
+            return
+        
+        filename = filedialog.asksavename(
+            title="Save Results",
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+        )
+        
+        if filename:
+            try:
+                with open(filename, 'w') as f:
+                    f.write("Autoencoder Training Results\n")
+                    f.write("=" * 50 + "\n")
+                    f.write(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                    
+                    # Get progress text content
+                    progress_content = self.progress_text.get(1.0, tk.END)
+                    f.write("Training Progress:\n")
+                    f.write("-" * 20 + "\n")
+                    f.write(progress_content)
+                    
+                    # Get results content
+                    results_content = self.results_text.get(1.0, tk.END)
+                    f.write("\nResults:\n")
+                    f.write("-" * 20 + "\n")
+                    f.write(results_content)
+                
+                messagebox.showinfo("Success", f"Results saved to {filename}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save results: {str(e)}")
+
+def main():
+    root = tk.Tk()
+    
+    # Configure ttk style for better buttons
+    style = ttk.Style()
+    try:
+        style.theme_use('clam')  # More modern looking theme
+    except:
+        pass  # Use default if clam not available
+    
+    app = AutoencoderApp(root)
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
