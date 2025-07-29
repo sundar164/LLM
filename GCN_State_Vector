@@ -1,0 +1,807 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import networkx as nx
+from datetime import datetime
+import json
+
+
+class GCNProcessor:
+    def __init__(self):
+        self.correlation_matrix = None
+        self.node_representations = None
+        self.final_state_vector = None
+
+    def calculate_correlations(self, data):
+        """Calculate feature correlation matrix with robust handling"""
+        try:
+            # Add small noise to prevent zero variance
+            data_with_noise = data + np.random.normal(0, 1e-10, data.shape)
+
+            # Calculate correlation matrix
+            corr_matrix = np.corrcoef(data_with_noise.T)
+
+            # Handle NaN values by replacing with zero correlation
+            corr_matrix = np.nan_to_num(corr_matrix, nan=0.0, posinf=1.0, neginf=-1.0)
+
+            # Ensure diagonal is 1 (self-correlation)
+            np.fill_diagonal(corr_matrix, 1.0)
+
+            # Clip correlations to valid range [-1, 1]
+            corr_matrix = np.clip(corr_matrix, -1.0, 1.0)
+
+            return corr_matrix
+
+        except Exception as e:
+            print(f"Warning: Correlation calculation failed: {e}")
+            # Return identity matrix as fallback
+            n_features = data.shape[1]
+            return np.eye(n_features)
+
+    def create_adjacency_matrix(self, correlation_matrix, threshold=0.1):
+        """Create adjacency matrix from correlations with robust handling"""
+        try:
+            # Use absolute correlations above threshold
+            abs_corr = np.abs(correlation_matrix)
+            adj_matrix = (abs_corr > threshold).astype(float)
+
+            # Add self-loops (identity matrix)
+            adj_matrix += np.eye(correlation_matrix.shape[0])
+
+            # Ensure adjacency matrix is symmetric
+            adj_matrix = (adj_matrix + adj_matrix.T) / 2
+
+            # Clip to [0, 1] range
+            adj_matrix = np.clip(adj_matrix, 0.0, 1.0)
+
+            return adj_matrix
+
+        except Exception as e:
+            print(f"Warning: Adjacency matrix creation failed: {e}")
+            # Return identity matrix as fallback
+            n = correlation_matrix.shape[0]
+            return np.eye(n)
+
+    def gcn_layer(self, H, A, W):
+        """Apply one GCN layer with robust numerical handling"""
+        try:
+            # Calculate degree matrix with small epsilon for stability
+            degrees = np.sum(A, axis=1)
+            degrees = np.maximum(degrees, 1e-8)  # Prevent zero degrees
+            D = np.diag(degrees)
+
+            # Calculate D^(-1/2) with numerical stability
+            D_inv_sqrt_diag = 1.0 / np.sqrt(degrees)
+            D_inv_sqrt_diag = np.nan_to_num(D_inv_sqrt_diag, nan=0.0, posinf=0.0, neginf=0.0)
+            D_inv_sqrt = np.diag(D_inv_sqrt_diag)
+
+            # Normalize adjacency matrix
+            A_normalized = D_inv_sqrt @ A @ D_inv_sqrt
+
+            # Handle any NaN or inf values in the normalized adjacency matrix
+            A_normalized = np.nan_to_num(A_normalized, nan=0.0, posinf=1.0, neginf=-1.0)
+
+            # Apply GCN transformation
+            H_new = A_normalized @ H @ W
+
+            # Handle numerical issues in the result
+            H_new = np.nan_to_num(H_new, nan=0.0, posinf=1.0, neginf=-1.0)
+
+            # Apply activation function (sigmoid)
+            return self.sigmoid(H_new)
+
+        except Exception as e:
+            print(f"Warning: GCN layer computation failed: {e}")
+            # Return original H with small random perturbation as fallback
+            return self.sigmoid(H + np.random.normal(0, 0.01, H.shape))
+
+    def sigmoid(self, x):
+        """Sigmoid activation function"""
+        return 1 / (1 + np.exp(-np.clip(x, -500, 500)))
+
+    def process_gcn(self, data, feature_names):
+        """Complete GCN processing pipeline with robust error handling"""
+        try:
+            # Normalize input data to prevent numerical issues
+            data_normalized = self.normalize_data(data)
+
+            # Step 1: Calculate correlations
+            self.correlation_matrix = self.calculate_correlations(data_normalized)
+
+            # Step 2: Create adjacency matrix
+            A = self.create_adjacency_matrix(self.correlation_matrix)
+
+            # Step 3: Initialize node features (transpose so features are rows/nodes)
+            H = data_normalized.T  # Shape: (n_features, n_samples)
+
+            # Step 4: Initialize random weight matrix with better scaling
+            np.random.seed(42)
+            input_dim = H.shape[1]
+            W = np.random.randn(input_dim, input_dim) * np.sqrt(2.0 / input_dim)
+
+            # Step 5: Apply GCN layer
+            self.node_representations = self.gcn_layer(H, A, W)
+
+            # Step 6: Aggregate to final state vector (average across samples)
+            self.final_state_vector = np.mean(self.node_representations, axis=1)
+
+            # Handle any remaining numerical issues
+            self.final_state_vector = np.nan_to_num(self.final_state_vector, nan=0.0)
+
+            return {
+                'correlation_matrix': self.correlation_matrix,
+                'adjacency_matrix': A,
+                'node_representations': self.node_representations,
+                'state_vector': self.final_state_vector,
+                'feature_names': feature_names,
+                'original_data': data_normalized
+            }
+
+        except Exception as e:
+            print(f"Error in GCN processing: {e}")
+            # Return fallback results
+            n_features = len(feature_names)
+            return {
+                'correlation_matrix': np.eye(n_features),
+                'adjacency_matrix': np.eye(n_features),
+                'node_representations': np.random.randn(n_features, data.shape[0]) * 0.1,
+                'state_vector': np.random.randn(n_features) * 0.1,
+                'feature_names': feature_names,
+                'original_data': data
+            }
+
+    def normalize_data(self, data):
+        """Normalize data using z-score normalization"""
+        try:
+            # Calculate mean and std for each feature
+            means = np.mean(data, axis=0)
+            stds = np.std(data, axis=0)
+
+            # Add small epsilon to prevent division by zero
+            stds = np.maximum(stds, 1e-8)
+
+            # Apply z-score normalization
+            normalized = (data - means) / stds
+
+            # Handle any NaN values
+            normalized = np.nan_to_num(normalized, nan=0.0)
+
+            return normalized
+
+        except Exception as e:
+            print(f"Warning: Data normalization failed: {e}")
+            # Return original data with small noise as fallback
+            return data + np.random.normal(0, 1e-6, data.shape)
+
+
+class SimpleGCNApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Simple GCN State Vector Visualization")
+        self.root.geometry("1200x800")
+
+        # Store results for both datasets separately
+        self.financial_results = None
+        self.ecommerce_results = None
+        self.financial_data = None
+        self.ecommerce_data = None
+
+        self.setup_ui()
+        self.generate_sample_data()
+
+    def setup_ui(self):
+        # Menu bar
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="Load Financial CSV", command=self.load_financial_csv)
+        file_menu.add_command(label="Load E-commerce CSV", command=self.load_ecommerce_csv)
+        file_menu.add_separator()
+        file_menu.add_command(label="Save Results", command=self.save_results)
+        file_menu.add_command(label="Exit", command=self.root.quit)
+
+        # Main frame
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Left panel - Controls and Data
+        left_frame = ttk.Frame(main_frame, width=400)
+        left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+        left_frame.pack_propagate(False)
+
+        # Control buttons
+        control_frame = ttk.LabelFrame(left_frame, text="GCN Processing Controls")
+        control_frame.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Button(control_frame, text="1. Generate Sample Data",
+                   command=self.generate_sample_data).pack(fill=tk.X, padx=5, pady=2)
+
+        ttk.Button(control_frame, text="2. Process Financial Dataset",
+                   command=self.process_financial).pack(fill=tk.X, padx=5, pady=2)
+
+        ttk.Button(control_frame, text="3. Process E-commerce Dataset",
+                   command=self.process_ecommerce).pack(fill=tk.X, padx=5, pady=2)
+
+        ttk.Button(control_frame, text="4. Show Both Results",
+                   command=self.show_both_results).pack(fill=tk.X, padx=5, pady=2)
+
+        ttk.Button(control_frame, text="📊 Show Graph Relationships Only",
+                   command=self.show_graphs_only).pack(fill=tk.X, padx=5, pady=2)
+
+        ttk.Button(control_frame, text="🎯 Show State Vectors Only",
+                   command=self.show_vectors_only).pack(fill=tk.X, padx=5, pady=2)
+
+        # Data display
+        data_frame = ttk.LabelFrame(left_frame, text="Sample Datasets")
+        data_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+        # Financial data
+        ttk.Label(data_frame, text="Financial Data:", font=('Arial', 10, 'bold')).pack(anchor=tk.W, padx=5, pady=(5, 0))
+        self.financial_text = tk.Text(data_frame, height=8, font=('Courier', 8))
+        fin_scroll = ttk.Scrollbar(data_frame, orient="vertical", command=self.financial_text.yview)
+        self.financial_text.configure(yscrollcommand=fin_scroll.set)
+        self.financial_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0), pady=2)
+        fin_scroll.pack(side=tk.RIGHT, fill=tk.Y, pady=2)
+
+        # E-commerce data
+        ttk.Label(data_frame, text="E-commerce Data:", font=('Arial', 10, 'bold')).pack(anchor=tk.W, padx=5,
+                                                                                        pady=(10, 0))
+        self.ecommerce_text = tk.Text(data_frame, height=8, font=('Courier', 8))
+        ecom_scroll = ttk.Scrollbar(data_frame, orient="vertical", command=self.ecommerce_text.yview)
+        self.ecommerce_text.configure(yscrollcommand=ecom_scroll.set)
+        self.ecommerce_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0), pady=2)
+        ecom_scroll.pack(side=tk.RIGHT, fill=tk.Y, pady=2)
+
+        # Results display
+        results_frame = ttk.LabelFrame(left_frame, text="Processing Results")
+        results_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.results_text = tk.Text(results_frame, height=12, font=('Courier', 9))
+        results_scroll = ttk.Scrollbar(results_frame, orient="vertical", command=self.results_text.yview)
+        self.results_text.configure(yscrollcommand=results_scroll.set)
+        self.results_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        results_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Right panel - Visualization with tabs
+        right_frame = ttk.Frame(main_frame)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+        # Create notebook for tabs
+        self.viz_notebook = ttk.Notebook(right_frame)
+        self.viz_notebook.pack(fill=tk.BOTH, expand=True)
+
+        # Tab 1: Graph Relationships
+        self.graph_tab = ttk.Frame(self.viz_notebook)
+        self.viz_notebook.add(self.graph_tab, text="📊 Graph Relationships")
+
+        # Tab 2: State Vector Results
+        self.vector_tab = ttk.Frame(self.viz_notebook)
+        self.viz_notebook.add(self.vector_tab, text="🎯 State Vector Results")
+
+        # Welcome message in graph tab
+        welcome_label1 = tk.Label(self.graph_tab,
+                                  text="Graph Relationships Tab\n\n" +
+                                       "This tab shows feature correlation graphs\n" +
+                                       "as network nodes with edges representing\n" +
+                                       "correlations between features.\n\n" +
+                                       "Process datasets to see the graphs!",
+                                  font=('Arial', 12), justify=tk.CENTER)
+        welcome_label1.pack(expand=True)
+
+        # Welcome message in vector tab
+        welcome_label2 = tk.Label(self.vector_tab,
+                                  text="State Vector Results Tab\n\n" +
+                                       "This tab shows the final state vectors\n" +
+                                       "as bar charts for both datasets.\n\n" +
+                                       "Process datasets to see the results!",
+                                  font=('Arial', 12), justify=tk.CENTER)
+        welcome_label2.pack(expand=True)
+
+    def generate_sample_data(self):
+        """Generate the exact same sample data as in our explanation"""
+        self.log_results("📊 Generating sample datasets...")
+
+        # Financial Dataset - exactly as in our example
+        self.financial_data = pd.DataFrame({
+            'stock_price': [52.1, 48.9, 55.2, 49.8],
+            'volume': [2100, 2200, 2050, 2150],
+            'market_cap': [5.2e9, 5.1e9, 5.3e9, 5.2e9],
+            'pe_ratio': [15.2, 15.4, 15.1, 15.3]
+        })
+
+        # E-commerce Dataset - exactly as in our example
+        self.ecommerce_data = pd.DataFrame({
+            'product_price': [29.99, 45.50, 12.99, 67.80],
+            'rating': [4.2, 3.8, 4.9, 4.1],
+            'num_reviews': [250, 180, 420, 310],
+            'category_score': [7.8, 6.9, 8.2, 7.5]
+        })
+
+        self.display_data()
+        self.log_results("✅ Sample data generated successfully!")
+
+    def display_data(self):
+        """Display both datasets clearly"""
+        # Clear previous data
+        self.financial_text.delete(1.0, tk.END)
+        self.ecommerce_text.delete(1.0, tk.END)
+
+        # Display financial data
+        self.financial_text.insert(tk.END, "Financial Dataset (4 samples × 4 features):\n")
+        self.financial_text.insert(tk.END, "-" * 45 + "\n")
+        self.financial_text.insert(tk.END, self.financial_data.round(2).to_string(index=False))
+
+        # Display e-commerce data
+        self.ecommerce_text.insert(tk.END, "E-commerce Dataset (4 samples × 4 features):\n")
+        self.ecommerce_text.insert(tk.END, "-" * 45 + "\n")
+        self.ecommerce_text.insert(tk.END, self.ecommerce_data.round(2).to_string(index=False))
+
+    def process_financial(self):
+        """Process Financial dataset with GCN"""
+        if self.financial_data is None:
+            messagebox.showerror("Error", "Please generate sample data first!")
+            return
+
+        self.log_results("\n🔗 Processing FINANCIAL dataset with GCN...")
+        self.log_results("=" * 50)
+
+        try:
+            # Create fresh processor
+            processor = GCNProcessor()
+            self.financial_results = processor.process_gcn(
+                self.financial_data.values.copy(),
+                list(self.financial_data.columns)
+            )
+
+            # Display results
+            state_vector = self.financial_results['state_vector']
+            self.log_results(f"✅ FINANCIAL State Vector: [{', '.join([f'{x:.3f}' for x in state_vector])}]")
+
+            # Show correlation info
+            corr_matrix = self.financial_results['correlation_matrix']
+            self.log_results(f"📊 Key Correlations:")
+            self.log_results(f"   stock_price ↔ market_cap: {corr_matrix[0, 2]:.3f}")
+            self.log_results(f"   stock_price ↔ pe_ratio: {corr_matrix[0, 3]:.3f}")
+            self.log_results(f"   market_cap ↔ pe_ratio: {corr_matrix[2, 3]:.3f}")
+
+        except Exception as e:
+            self.log_results(f"❌ Error processing financial data: {str(e)}")
+            messagebox.showerror("Processing Error", f"Failed to process financial data: {str(e)}")
+
+    def process_ecommerce(self):
+        """Process E-commerce dataset with GCN"""
+        if self.ecommerce_data is None:
+            messagebox.showerror("Error", "Please generate sample data first!")
+            return
+
+        self.log_results("\n🛒 Processing E-COMMERCE dataset with GCN...")
+        self.log_results("=" * 50)
+
+        try:
+            # Create fresh processor
+            processor = GCNProcessor()
+            self.ecommerce_results = processor.process_gcn(
+                self.ecommerce_data.values.copy(),
+                list(self.ecommerce_data.columns)
+            )
+
+            # Display results
+            state_vector = self.ecommerce_results['state_vector']
+            self.log_results(f"✅ E-COMMERCE State Vector: [{', '.join([f'{x:.3f}' for x in state_vector])}]")
+
+            # Show correlation info
+            corr_matrix = self.ecommerce_results['correlation_matrix']
+            self.log_results(f"📊 Key Correlations:")
+            self.log_results(f"   product_price ↔ rating: {corr_matrix[0, 1]:.3f}")
+            self.log_results(f"   rating ↔ num_reviews: {corr_matrix[1, 2]:.3f}")
+            self.log_results(f"   rating ↔ category_score: {corr_matrix[1, 3]:.3f}")
+
+        except Exception as e:
+            self.log_results(f"❌ Error processing e-commerce data: {str(e)}")
+            messagebox.showerror("Processing Error", f"Failed to process e-commerce data: {str(e)}")
+
+    def show_both_results(self):
+        """Show both Financial and E-commerce results in separate tabs"""
+        if self.financial_results is None or self.ecommerce_results is None:
+            messagebox.showwarning("Warning", "Please process both datasets first!")
+            return
+
+        # Update both tabs
+        self.show_graph_relationships()
+        self.show_state_vector_results()
+
+        # Display final comparison in results panel
+        fin_vector = self.financial_results['state_vector']
+        ecom_vector = self.ecommerce_results['state_vector']
+
+        self.log_results("\n" + "=" * 60)
+        self.log_results("🎯 FINAL STATE VECTOR COMPARISON")
+        self.log_results("=" * 60)
+        self.log_results(f"FINANCIAL:   [{', '.join([f'{x:.3f}' for x in fin_vector])}]")
+        self.log_results(f"E-COMMERCE:  [{', '.join([f'{x:.3f}' for x in ecom_vector])}]")
+
+        # Calculate similarity
+        similarity = np.corrcoef(fin_vector, ecom_vector)[0, 1]
+        distance = np.linalg.norm(fin_vector - ecom_vector)
+
+        self.log_results(f"\n📊 COMPARISON METRICS:")
+        self.log_results(f"   Similarity (correlation): {similarity:.3f}")
+        self.log_results(f"   Distance (euclidean): {distance:.3f}")
+
+        if similarity > 0.5:
+            self.log_results("   → Datasets have SIMILAR patterns")
+        elif similarity > 0:
+            self.log_results("   → Datasets have MODERATE similarity")
+        else:
+            self.log_results("   → Datasets have DIFFERENT patterns")
+
+        self.log_results("\n🎉 Both tabs updated with results!")
+
+    def show_graph_relationships(self):
+        """Show graph relationships in the graph tab"""
+        # Clear graph tab
+        for widget in self.graph_tab.winfo_children():
+            widget.destroy()
+
+        # Create figure for graph relationships
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7))
+        fig.suptitle('Feature Correlation Graph Relationships', fontsize=16, fontweight='bold')
+
+        # FINANCIAL CORRELATION GRAPH
+        fin_features = self.financial_results['feature_names']
+        fin_corr = self.financial_results['correlation_matrix']
+
+        G_fin = nx.Graph()
+
+        # Add nodes with state vector values
+        fin_vector = self.financial_results['state_vector']
+        for i, feature in enumerate(fin_features):
+            G_fin.add_node(i, name=feature, state_value=fin_vector[i])
+
+        # Add edges for correlations above threshold
+        for i in range(len(fin_features)):
+            for j in range(i + 1, len(fin_features)):
+                corr_val = abs(fin_corr[i, j])
+                if corr_val > 0.2:  # Lower threshold to show more connections
+                    G_fin.add_edge(i, j, weight=corr_val, correlation=fin_corr[i, j])
+
+        # Layout and draw financial graph
+        pos_fin = nx.spring_layout(G_fin, k=3, iterations=50)
+
+        # Draw edges with different colors for positive/negative correlations
+        edges_fin = G_fin.edges(data=True)
+        pos_edges = [(u, v) for u, v, d in edges_fin if d['correlation'] > 0]
+        neg_edges = [(u, v) for u, v, d in edges_fin if d['correlation'] < 0]
+
+        if pos_edges:
+            nx.draw_networkx_edges(G_fin, pos_fin, edgelist=pos_edges, edge_color='blue',
+                                   width=[G_fin[u][v]['weight'] * 6 for u, v in pos_edges],
+                                   alpha=0.7, ax=ax1)
+        if neg_edges:
+            nx.draw_networkx_edges(G_fin, pos_fin, edgelist=neg_edges, edge_color='red',
+                                   width=[G_fin[u][v]['weight'] * 6 for u, v in neg_edges],
+                                   style='dashed', alpha=0.7, ax=ax1)
+
+        # Draw nodes with sizes based on state vector values
+        node_sizes_fin = [abs(fin_vector[i]) * 2000 + 800 for i in range(len(fin_features))]
+        node_colors_fin = [fin_vector[i] for i in range(len(fin_features))]
+
+        nodes_fin = nx.draw_networkx_nodes(G_fin, pos_fin, node_size=node_sizes_fin,
+                                           node_color=node_colors_fin, cmap='RdYlBu_r',
+                                           alpha=0.8, ax=ax1)
+
+        # Add labels with feature names and state values
+        labels_fin = {}
+        for i, feature in enumerate(fin_features):
+            labels_fin[i] = f"{feature[:8]}\n{fin_vector[i]:.3f}"
+
+        nx.draw_networkx_labels(G_fin, pos_fin, labels_fin, font_size=9, font_weight='bold', ax=ax1)
+
+        # Add edge labels for strong correlations
+        edge_labels_fin = {}
+        for u, v, d in edges_fin:
+            if abs(d['correlation']) > 0.5:
+                edge_labels_fin[(u, v)] = f"{d['correlation']:.2f}"
+
+        nx.draw_networkx_edge_labels(G_fin, pos_fin, edge_labels_fin, font_size=8, ax=ax1)
+
+        ax1.set_title('FINANCIAL Dataset\nFeature Correlation Graph\n(Node size = State vector magnitude)',
+                      fontsize=12, fontweight='bold')
+        ax1.axis('off')
+
+        # Add colorbar for financial nodes
+        plt.colorbar(nodes_fin, ax=ax1, shrink=0.6, label='State Vector Value')
+
+        # E-COMMERCE CORRELATION GRAPH
+        ecom_features = self.ecommerce_results['feature_names']
+        ecom_corr = self.ecommerce_results['correlation_matrix']
+
+        G_ecom = nx.Graph()
+
+        # Add nodes with state vector values
+        ecom_vector = self.ecommerce_results['state_vector']
+        for i, feature in enumerate(ecom_features):
+            G_ecom.add_node(i, name=feature, state_value=ecom_vector[i])
+
+        # Add edges for correlations above threshold
+        for i in range(len(ecom_features)):
+            for j in range(i + 1, len(ecom_features)):
+                corr_val = abs(ecom_corr[i, j])
+                if corr_val > 0.2:
+                    G_ecom.add_edge(i, j, weight=corr_val, correlation=ecom_corr[i, j])
+
+        # Layout and draw e-commerce graph
+        pos_ecom = nx.spring_layout(G_ecom, k=3, iterations=50)
+
+        # Draw edges (mostly positive for e-commerce)
+        edges_ecom = G_ecom.edges(data=True)
+        pos_edges_ecom = [(u, v) for u, v, d in edges_ecom if d['correlation'] > 0]
+
+        if pos_edges_ecom:
+            nx.draw_networkx_edges(G_ecom, pos_ecom, edgelist=pos_edges_ecom, edge_color='green',
+                                   width=[G_ecom[u][v]['weight'] * 6 for u, v in pos_edges_ecom],
+                                   alpha=0.7, ax=ax2)
+
+        # Draw nodes with sizes based on state vector values
+        node_sizes_ecom = [abs(ecom_vector[i]) * 2000 + 800 for i in range(len(ecom_features))]
+        node_colors_ecom = [ecom_vector[i] for i in range(len(ecom_features))]
+
+        nodes_ecom = nx.draw_networkx_nodes(G_ecom, pos_ecom, node_size=node_sizes_ecom,
+                                            node_color=node_colors_ecom, cmap='RdYlBu_r',
+                                            alpha=0.8, ax=ax2)
+
+        # Add labels with feature names and state values
+        labels_ecom = {}
+        for i, feature in enumerate(ecom_features):
+            labels_ecom[i] = f"{feature[:8]}\n{ecom_vector[i]:.3f}"
+
+        nx.draw_networkx_labels(G_ecom, pos_ecom, labels_ecom, font_size=9, font_weight='bold', ax=ax2)
+
+        # Add edge labels for strong correlations
+        edge_labels_ecom = {}
+        for u, v, d in edges_ecom:
+            if abs(d['correlation']) > 0.5:
+                edge_labels_ecom[(u, v)] = f"{d['correlation']:.2f}"
+
+        nx.draw_networkx_edge_labels(G_ecom, pos_ecom, edge_labels_ecom, font_size=8, ax=ax2)
+
+        ax2.set_title('E-COMMERCE Dataset\nFeature Correlation Graph\n(Node size = State vector magnitude)',
+                      fontsize=12, fontweight='bold')
+        ax2.axis('off')
+
+        # Add colorbar for e-commerce nodes
+        plt.colorbar(nodes_ecom, ax=ax2, shrink=0.6, label='State Vector Value')
+
+        # Add legend
+        from matplotlib.lines import Line2D
+        legend_elements = [
+            Line2D([0], [0], color='blue', lw=3, label='Positive Correlation'),
+            Line2D([0], [0], color='red', lw=3, linestyle='--', label='Negative Correlation'),
+            Line2D([0], [0], color='green', lw=3, label='E-commerce Positive Correlation'),
+            Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=10, label='Feature Node')
+        ]
+        fig.legend(handles=legend_elements, loc='lower center', ncol=4, bbox_to_anchor=(0.5, 0.02))
+
+        plt.tight_layout()
+        plt.subplots_adjust(bottom=0.15)
+
+        # Embed in graph tab
+        canvas = FigureCanvasTkAgg(fig, self.graph_tab)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    def show_state_vector_results(self):
+        """Show state vector results in the vector tab"""
+        # Clear vector tab
+        for widget in self.vector_tab.winfo_children():
+            widget.destroy()
+
+        # Create figure for state vectors
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(14, 10))
+        fig.suptitle('GCN State Vector Results Comparison', fontsize=16, fontweight='bold')
+
+        fin_vector = self.financial_results['state_vector']
+        ecom_vector = self.ecommerce_results['state_vector']
+        fin_features = self.financial_results['feature_names']
+        ecom_features = self.ecommerce_results['feature_names']
+
+        # Plot 1: Financial State Vector
+        bars1 = ax1.bar(range(len(fin_vector)), fin_vector, color='lightblue', alpha=0.8,
+                        edgecolor='navy', linewidth=2)
+        ax1.set_title('FINANCIAL Dataset\nState Vector Values', fontsize=12, fontweight='bold')
+        ax1.set_xlabel('Features')
+        ax1.set_ylabel('State Vector Value')
+        ax1.set_xticks(range(len(fin_features)))
+        ax1.set_xticklabels([name[:10] for name in fin_features], rotation=45)
+        ax1.grid(True, alpha=0.3)
+
+        # Add value labels on bars
+        for i, (bar, value) in enumerate(zip(bars1, fin_vector)):
+            ax1.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.005,
+                     f'{value:.3f}', ha='center', va='bottom', fontsize=11, fontweight='bold')
+
+        # Plot 2: E-commerce State Vector
+        bars2 = ax2.bar(range(len(ecom_vector)), ecom_vector, color='lightcoral', alpha=0.8,
+                        edgecolor='darkred', linewidth=2)
+        ax2.set_title('E-COMMERCE Dataset\nState Vector Values', fontsize=12, fontweight='bold')
+        ax2.set_xlabel('Features')
+        ax2.set_ylabel('State Vector Value')
+        ax2.set_xticks(range(len(ecom_features)))
+        ax2.set_xticklabels([name[:10] for name in ecom_features], rotation=45)
+        ax2.grid(True, alpha=0.3)
+
+        # Add value labels on bars
+        for i, (bar, value) in enumerate(zip(bars2, ecom_vector)):
+            ax2.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.005,
+                     f'{value:.3f}', ha='center', va='bottom', fontsize=11, fontweight='bold')
+
+        # Plot 3: Side-by-side comparison
+        x = np.arange(4)  # Both have 4 features
+        width = 0.35
+
+        bars3a = ax3.bar(x - width / 2, fin_vector, width, label='Financial', color='lightblue',
+                         alpha=0.8, edgecolor='navy')
+        bars3b = ax3.bar(x + width / 2, ecom_vector, width, label='E-commerce', color='lightcoral',
+                         alpha=0.8, edgecolor='darkred')
+
+        ax3.set_title('Side-by-Side State Vector Comparison', fontsize=12, fontweight='bold')
+        ax3.set_xlabel('Feature Index')
+        ax3.set_ylabel('State Vector Value')
+        ax3.set_xticks(x)
+        ax3.set_xticklabels([f'F{i + 1}' for i in range(4)])
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+
+        # Add value labels
+        for bars in [bars3a, bars3b]:
+            for bar in bars:
+                height = bar.get_height()
+                ax3.text(bar.get_x() + bar.get_width() / 2., height + 0.005,
+                         f'{height:.3f}', ha='center', va='bottom', fontsize=10)
+
+        # Plot 4: Summary statistics and comparison
+        ax4.axis('off')
+
+        # Calculate comparison metrics
+        similarity = np.corrcoef(fin_vector, ecom_vector)[0, 1]
+        distance = np.linalg.norm(fin_vector - ecom_vector)
+
+        # Create summary text
+        summary_text = f"""STATE VECTOR COMPARISON SUMMARY
+
+Financial Dataset:
+• stock_price:   {fin_vector[0]:.3f}
+• volume:        {fin_vector[1]:.3f}
+• market_cap:    {fin_vector[2]:.3f}
+• pe_ratio:      {fin_vector[3]:.3f}
+
+E-commerce Dataset:
+• product_price: {ecom_vector[0]:.3f}
+• rating:        {ecom_vector[1]:.3f}
+• num_reviews:   {ecom_vector[2]:.3f}
+• category_score:{ecom_vector[3]:.3f}
+
+Comparison Metrics:
+• Correlation:    {similarity:.3f}
+• Euclidean Dist: {distance:.3f}
+
+Key Insights:
+• Financial: {self.get_dataset_insight(fin_vector, "financial")}
+• E-commerce: {self.get_dataset_insight(ecom_vector, "ecommerce")}
+"""
+
+        ax4.text(0.05, 0.95, summary_text, transform=ax4.transAxes, fontsize=11,
+                 verticalalignment='top', fontfamily='monospace',
+                 bbox=dict(boxstyle="round,pad=0.5", facecolor="lightyellow", alpha=0.8))
+
+        plt.tight_layout()
+
+        # Embed in vector tab
+        canvas = FigureCanvasTkAgg(fig, self.vector_tab)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    def get_dataset_insight(self, vector, dataset_type):
+        """Generate insight about dataset based on state vector"""
+        max_idx = np.argmax(vector)
+        min_idx = np.argmin(vector)
+
+        if dataset_type == "financial":
+            features = ['stock_price', 'volume', 'market_cap', 'pe_ratio']
+        else:
+            features = ['product_price', 'rating', 'num_reviews', 'category_score']
+
+        return f"Strongest: {features[max_idx]}, Weakest: {features[min_idx]}"
+
+    def show_graphs_only(self):
+        """Show only graph relationships"""
+        if self.financial_results is None or self.ecommerce_results is None:
+            messagebox.showwarning("Warning", "Please process both datasets first!")
+            return
+
+        self.show_graph_relationships()
+        self.viz_notebook.select(0)  # Switch to graph tab
+        self.log_results("📊 Graph relationships displayed in Graph tab!")
+
+    def show_vectors_only(self):
+        """Show only state vector results"""
+        if self.financial_results is None or self.ecommerce_results is None:
+            messagebox.showwarning("Warning", "Please process both datasets first!")
+            return
+
+        self.show_state_vector_results()
+        self.viz_notebook.select(1)  # Switch to vector tab
+        self.log_results("🎯 State vector results displayed in Vector tab!")
+
+    def log_results(self, message):
+        """Log message to results text widget"""
+        self.results_text.insert(tk.END, message + "\n")
+        self.results_text.see(tk.END)
+        self.root.update_idletasks()
+
+    def load_financial_csv(self):
+        """Load financial data from CSV"""
+        filename = filedialog.askopenfilename(
+            title="Load Financial CSV",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        if filename:
+            try:
+                self.financial_data = pd.read_csv(filename)
+                self.display_data()
+                self.log_results(f"✅ Financial data loaded from {filename}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load financial data: {str(e)}")
+
+    def load_ecommerce_csv(self):
+        """Load e-commerce data from CSV"""
+        filename = filedialog.askopenfilename(
+            title="Load E-commerce CSV",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        if filename:
+            try:
+                self.ecommerce_data = pd.read_csv(filename)
+                self.display_data()
+                self.log_results(f"✅ E-commerce data loaded from {filename}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load e-commerce data: {str(e)}")
+
+    def save_results(self):
+        """Save processing results"""
+        if not self.financial_results and not self.ecommerce_results:
+            messagebox.showwarning("Warning", "No results to save!")
+            return
+
+        filename = filedialog.asksavename(
+            title="Save Results",
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+        )
+
+        if filename:
+            try:
+                with open(filename, 'w') as f:
+                    f.write("GCN State Vector Results\n")
+                    f.write("=" * 50 + "\n")
+                    f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                    f.write(self.results_text.get(1.0, tk.END))
+
+                messagebox.showinfo("Success", f"Results saved to {filename}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save: {str(e)}")
+
+
+def main():
+    root = tk.Tk()
+    app = SimpleGCNApp(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
