@@ -1,0 +1,769 @@
+import tkinter as tk
+from tkinter import ttk, scrolledtext, messagebox
+import threading
+import time
+import random
+from datetime import datetime
+import json
+
+
+class FlameManagementPlane:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Flame Management Plane Simulator")
+        self.root.geometry("1400x900")
+
+
+
+        # Sample data
+        self.jobs = {
+            "job_001": {
+                "name": "Federated Image Classification",
+                "status": "Running",
+                "workers": 5,
+                "created": "2025-01-15 10:30:00",
+                "tag": "ResNet50_FL",
+                "clusters": ["k8s-cluster-1", "docker-swarm-1"]
+            },
+            "job_002": {
+                "name": "NLP Sentiment Analysis",
+                "status": "Pending",
+                "workers": 3,
+                "created": "2025-01-15 11:45:00",
+                "tag": "BERT_FL",
+                "clusters": ["k8s-cluster-2"]
+            }
+        }
+
+        self.clusters = {
+            "k8s-cluster-1": {"type": "Kubernetes", "status": "Active", "nodes": 8, "available_cpu": "32 cores"},
+            "docker-swarm-1": {"type": "Docker Swarm", "status": "Active", "nodes": 4, "available_cpu": "16 cores"},
+            "k8s-cluster-2": {"type": "Kubernetes", "status": "Active", "nodes": 6, "available_cpu": "24 cores"}
+        }
+
+        self.agents = {
+            "agent_001": {"job": "job_001", "role": "aggregator", "status": "Active", "cluster": "k8s-cluster-1"},
+            "agent_002": {"job": "job_001", "role": "trainer", "status": "Active", "cluster": "k8s-cluster-1"},
+            "agent_003": {"job": "job_001", "role": "trainer", "status": "Active", "cluster": "docker-swarm-1"},
+            "agent_004": {"job": "job_002", "role": "trainer", "status": "Initializing", "cluster": "k8s-cluster-2"}
+        }
+
+        self.events = []
+        self.notifications = []
+
+        self.setup_ui()
+        self.start_background_processes()
+
+    def setup_ui(self):
+        # Create notebook for tabs
+        notebook = ttk.Notebook(self.root)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Tab 1: API Server
+        self.create_api_server_tab(notebook)
+
+        # Tab 2: Controller
+        self.create_controller_tab(notebook)
+
+        # Tab 3: Deployer
+        self.create_deployer_tab(notebook)
+
+        # Tab 4: Agent
+        self.create_agent_tab(notebook)
+
+        # Tab 5: Notifier
+        self.create_notifier_tab(notebook)
+
+    def create_api_server_tab(self, notebook):
+        frame = ttk.Frame(notebook)
+        notebook.add(frame, text="API Server")
+
+        # Title
+        title_label = tk.Label(frame, text="API Server - REST API Frontend",
+                               font=("Arial", 16, "bold"), fg="blue")
+        title_label.pack(pady=10)
+        #Style
+        style = ttk.Style()
+        style.configure("Custom.TLabelframe", background="#c07999")
+
+        # CLI Simulation Section
+        cli_frame = ttk.LabelFrame(frame, text="CLI Tool Interface", padding=10,style="Custom.TLabelframe")
+        cli_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        # CLI Input
+        input_frame = tk.Frame(cli_frame)
+        input_frame.pack(fill=tk.X, pady=5)
+
+        tk.Label(input_frame, text="CLI Command:").pack(side=tk.LEFT)
+        self.cli_entry = tk.Entry(input_frame, width=50)
+        self.cli_entry.pack(side=tk.LEFT, padx=5)
+        self.cli_entry.bind('<Return>', self.process_cli_command)
+
+        cli_button = tk.Button(input_frame, text="Execute", command=self.process_cli_command)
+        cli_button.pack(side=tk.LEFT, padx=5)
+
+        # Sample commands
+        sample_frame = tk.Frame(cli_frame)
+        sample_frame.pack(fill=tk.X, pady=5)
+
+        tk.Label(sample_frame, text="Sample Commands:", font=("Arial", 10, "bold")).pack(anchor=tk.W)
+
+        commands = [
+            "GET /jobs",
+            "POST /jobs/{job_id}/start",
+            "GET /agents/status",
+            "POST /deploy/k8s-cluster-1"
+        ]
+
+        for cmd in commands:
+            btn = tk.Button(sample_frame, text=cmd, command=lambda c=cmd: self.cli_entry.insert(0, c))
+            btn.pack(side=tk.LEFT, padx=2, pady=2)
+
+        # CLI Output
+        self.cli_output = scrolledtext.ScrolledText(cli_frame, height=15, width=80)
+        self.cli_output.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        # API Endpoints List
+        endpoints_frame = ttk.LabelFrame(frame, text="Available REST Endpoints", padding=10)
+        endpoints_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        endpoints_text = """
+• GET /jobs - List all federated learning jobs
+• POST /jobs - Create new FL job
+• GET /jobs/{id} - Get job details
+• PUT /jobs/{id}/start - Start job execution
+• DELETE /jobs/{id} - Terminate job
+• GET /agents - List all agents
+• GET /clusters - List compute clusters
+• POST /deploy/{cluster} - Deploy to cluster
+        """
+
+        tk.Label(endpoints_frame, text=endpoints_text, justify=tk.LEFT).pack(anchor=tk.W)
+
+    def create_controller_tab(self, notebook):
+        frame = ttk.Frame(notebook)
+        notebook.add(frame, text="Controller")
+
+        # Title
+        title_label = tk.Label(frame, text="Controller - Core Management Unit",
+                               font=("Arial", 16, "bold"), fg="green")
+        title_label.pack(pady=10)
+
+        # Main container
+        main_container = tk.Frame(frame,bg = "#7999c0")
+        main_container.pack(fill=tk.BOTH, expand=True, padx=10)
+
+        # Left side - Job Management
+        left_frame = ttk.LabelFrame(main_container, text="Job Management & TAG Expansion", padding=10)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+
+        # Jobs list
+        tk.Label(left_frame, text="Active Jobs:", font=("Arial", 12, "bold")).pack(anchor=tk.W)
+
+        jobs_frame = tk.Frame(left_frame)
+        jobs_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        # Jobs treeview
+        jobs_columns = ("Job ID", "Name", "Status", "Workers", "Created")
+        self.jobs_tree = ttk.Treeview(jobs_frame, columns=jobs_columns, show="headings", height=8)
+
+        for col in jobs_columns:
+            self.jobs_tree.heading(col, text=col)
+            self.jobs_tree.column(col, width=120)
+
+        self.jobs_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        jobs_scrollbar = ttk.Scrollbar(jobs_frame, orient=tk.VERTICAL, command=self.jobs_tree.yview)
+        jobs_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.jobs_tree.configure(yscrollcommand=jobs_scrollbar.set)
+
+        # TAG Expansion simulation
+        tag_frame = tk.Frame(left_frame)
+        tag_frame.pack(fill=tk.X, pady=10)
+
+        tk.Button(tag_frame, text="Expand TAG", command=self.simulate_tag_expansion,
+                  bg="lightgreen").pack(side=tk.LEFT, padx=5)
+        tk.Button(tag_frame, text="Monitor Job", command=self.monitor_job,
+                  bg="lightblue").pack(side=tk.LEFT, padx=5)
+
+        # Right side - System State & Monitoring
+        right_frame = ttk.LabelFrame(main_container, text="System State & Monitoring", padding=10)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5)
+
+        # System state display
+        self.system_state = scrolledtext.ScrolledText(right_frame, height=15, width=40)
+        self.system_state.pack(fill=tk.BOTH, expand=True)
+
+        # Database state simulation
+        db_frame = tk.Frame(right_frame)
+        db_frame.pack(fill=tk.X, pady=5)
+
+        tk.Button(db_frame, text="Update Database", command=self.update_database,
+                  bg="orange").pack(side=tk.LEFT, padx=2)
+        tk.Button(db_frame, text="Check Resources", command=self.check_resources,
+                  bg="yellow").pack(side=tk.LEFT, padx=2)
+
+        self.populate_jobs_tree()
+        self.update_system_state()
+
+    def create_deployer_tab(self, notebook):
+        frame = ttk.Frame(notebook)
+        notebook.add(frame, text="Deployer")
+
+        # Title
+        title_label = tk.Label(frame, text="Deployer - Compute Orchestration Interface",
+                               font=("Arial", 16, "bold"), fg="purple")
+        title_label.pack(pady=10)
+
+        # Main container
+        main_container = tk.Frame(frame)
+        main_container.pack(fill=tk.BOTH, expand=True, padx=10)
+
+        # Left side - Cluster Management
+        left_frame = ttk.LabelFrame(main_container, text="Compute Clusters", padding=10)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+
+        # Clusters treeview
+        clusters_columns = ("Cluster ID", "Type", "Status", "Nodes", "CPU")
+        self.clusters_tree = ttk.Treeview(left_frame, columns=clusters_columns, show="headings", height=8)
+
+        for col in clusters_columns:
+            self.clusters_tree.heading(col, text=col)
+            self.clusters_tree.column(col, width=100)
+
+        self.clusters_tree.pack(fill=tk.BOTH, expand=True)
+
+        # Deployment controls
+        deploy_frame = tk.Frame(left_frame)
+        deploy_frame.pack(fill=tk.X, pady=10)
+
+        tk.Button(deploy_frame, text="Deploy to Kubernetes",
+                  command=lambda: self.deploy_to_cluster("kubernetes"), bg="lightgreen").pack(pady=2, fill=tk.X)
+        tk.Button(deploy_frame, text="Deploy to Docker Swarm",
+                  command=lambda: self.deploy_to_cluster("docker-swarm"), bg="lightblue").pack(pady=2, fill=tk.X)
+        tk.Button(deploy_frame, text="Deploy to Apache Mesos",
+                  command=lambda: self.deploy_to_cluster("mesos"), bg="lightyellow").pack(pady=2, fill=tk.X)
+
+        # Right side - Deployment Logs
+        right_frame = ttk.LabelFrame(main_container, text="Deployment Logs & Status", padding=10)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5)
+
+        self.deployment_logs = scrolledtext.ScrolledText(right_frame, height=20, width=50)
+        self.deployment_logs.pack(fill=tk.BOTH, expand=True)
+
+        # Resource allocation frame
+        resource_frame = tk.Frame(right_frame)
+        resource_frame.pack(fill=tk.X, pady=5)
+
+        tk.Button(resource_frame, text="Allocate Resources", command=self.allocate_resources,
+                  bg="orange").pack(side=tk.LEFT, padx=2)
+        tk.Button(resource_frame, text="Scale Up", command=self.scale_up,
+                  bg="green").pack(side=tk.LEFT, padx=2)
+        tk.Button(resource_frame, text="Scale Down", command=self.scale_down,
+                  bg="red").pack(side=tk.LEFT, padx=2)
+
+        self.populate_clusters_tree()
+        self.update_deployment_logs()
+
+    def create_agent_tab(self, notebook):
+        frame = ttk.Frame(notebook)
+        notebook.add(frame, text="Agent")
+
+        # Title
+        title_label = tk.Label(frame, text="Agent - Task Lifecycle Management",
+                               font=("Arial", 16, "bold"), fg="red")
+        title_label.pack(pady=10)
+
+        # Main container
+        main_container = tk.Frame(frame)
+        main_container.pack(fill=tk.BOTH, expand=True, padx=10)
+
+        # Left side - Active Agents
+        left_frame = ttk.LabelFrame(main_container, text="Active Agents", padding=10)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+
+        # Agents treeview
+        agents_columns = ("Agent ID", "Job", "Role", "Status", "Cluster")
+        self.agents_tree = ttk.Treeview(left_frame, columns=agents_columns, show="headings", height=10)
+
+        for col in agents_columns:
+            self.agents_tree.heading(col, text=col)
+            self.agents_tree.column(col, width=100)
+
+        self.agents_tree.pack(fill=tk.BOTH, expand=True)
+
+        # Agent controls
+        agent_controls = tk.Frame(left_frame)
+        agent_controls.pack(fill=tk.X, pady=5)
+
+        tk.Button(agent_controls, text="Start Task", command=self.start_agent_task,
+                  bg="lightgreen").pack(side=tk.LEFT, padx=2)
+        tk.Button(agent_controls, text="Monitor Task", command=self.monitor_agent_task,
+                  bg="lightblue").pack(side=tk.LEFT, padx=2)
+        tk.Button(agent_controls, text="Terminate Task", command=self.terminate_agent_task,
+                  bg="lightcoral").pack(side=tk.LEFT, padx=2)
+
+        # Right side - Agent Details & Logs
+        right_frame = ttk.LabelFrame(main_container, text="Agent Details & Task Logs", padding=10)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5)
+
+        # Agent details
+        details_frame = tk.Frame(right_frame)
+        details_frame.pack(fill=tk.X, pady=5)
+
+        tk.Label(details_frame, text="Selected Agent Details:", font=("Arial", 12, "bold")).pack(anchor=tk.W)
+
+        self.agent_details = tk.Text(details_frame, height=6, width=50)
+        self.agent_details.pack(fill=tk.X, pady=5)
+
+        # Task logs
+        tk.Label(right_frame, text="Task Execution Logs:", font=("Arial", 12, "bold")).pack(anchor=tk.W)
+
+        self.agent_logs = scrolledtext.ScrolledText(right_frame, height=15, width=50)
+        self.agent_logs.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        # Lifecycle simulation
+        lifecycle_frame = tk.Frame(right_frame)
+        lifecycle_frame.pack(fill=tk.X, pady=5)
+
+        tk.Button(lifecycle_frame, text="Fetch ML Code", command=self.fetch_ml_code,
+                  bg="yellow").pack(side=tk.LEFT, padx=2)
+        tk.Button(lifecycle_frame, text="Start Worker", command=self.start_worker_process,
+                  bg="green").pack(side=tk.LEFT, padx=2)
+
+        self.populate_agents_tree()
+        self.agents_tree.bind('<<TreeviewSelect>>', self.on_agent_select)
+
+    def create_notifier_tab(self, notebook):
+        frame = ttk.Frame(notebook)
+        notebook.add(frame, text="Notifier")
+
+        # Title
+        title_label = tk.Label(frame, text="Notifier - Event-Driven Management",
+                               font=("Arial", 16, "bold"), fg="orange")
+        title_label.pack(pady=10)
+
+        # Main container
+        main_container = tk.Frame(frame)
+        main_container.pack(fill=tk.BOTH, expand=True, padx=10)
+
+        # Left side - Active Connections
+        left_frame = ttk.LabelFrame(main_container, text="Active Connections", padding=10)
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+
+        # Connection status
+        tk.Label(left_frame, text="Connected Components:", font=("Arial", 12, "bold")).pack(anchor=tk.W)
+
+        connections_frame = tk.Frame(left_frame)
+        connections_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        self.connections_listbox = tk.Listbox(connections_frame, height=8)
+        self.connections_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        conn_scrollbar = ttk.Scrollbar(connections_frame, orient=tk.VERTICAL,
+                                       command=self.connections_listbox.yview)
+        conn_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.connections_listbox.configure(yscrollcommand=conn_scrollbar.set)
+
+        # Event controls
+        event_controls = tk.Frame(left_frame)
+        event_controls.pack(fill=tk.X, pady=10)
+
+        tk.Button(event_controls, text="Send Job Event", command=self.send_job_event,
+                  bg="lightgreen").pack(pady=2, fill=tk.X)
+        tk.Button(event_controls, text="Send Deployment Event", command=self.send_deployment_event,
+                  bg="lightblue").pack(pady=2, fill=tk.X)
+        tk.Button(event_controls, text="Send Alert", command=self.send_alert,
+                  bg="orange").pack(pady=2, fill=tk.X)
+
+        # Right side - Event Logs
+        right_frame = ttk.LabelFrame(main_container, text="Event Logs & Notifications", padding=10)
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5)
+
+        # Event logs
+        tk.Label(right_frame, text="Recent Events:", font=("Arial", 12, "bold")).pack(anchor=tk.W)
+
+        self.event_logs = scrolledtext.ScrolledText(right_frame, height=12, width=50)
+        self.event_logs.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        # Notification area
+        tk.Label(right_frame, text="Notification Queue:", font=("Arial", 12, "bold")).pack(anchor=tk.W)
+
+        self.notification_area = scrolledtext.ScrolledText(right_frame, height=8, width=50)
+        self.notification_area.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        # Statistics
+        stats_frame = tk.Frame(right_frame)
+        stats_frame.pack(fill=tk.X, pady=5)
+
+        self.stats_label = tk.Label(stats_frame, text="Events Sent: 0 | Notifications: 0",
+                                    font=("Arial", 10))
+        self.stats_label.pack()
+
+        self.populate_connections()
+        self.update_event_logs()
+
+    # Helper methods for functionality
+    def populate_jobs_tree(self):
+        for job_id, job_data in self.jobs.items():
+            self.jobs_tree.insert("", "end", values=(
+                job_id, job_data["name"], job_data["status"],
+                job_data["workers"], job_data["created"]
+            ))
+
+    def populate_clusters_tree(self):
+        for cluster_id, cluster_data in self.clusters.items():
+            self.clusters_tree.insert("", "end", values=(
+                cluster_id, cluster_data["type"], cluster_data["status"],
+                cluster_data["nodes"], cluster_data["available_cpu"]
+            ))
+
+    def populate_agents_tree(self):
+        for agent_id, agent_data in self.agents.items():
+            self.agents_tree.insert("", "end", values=(
+                agent_id, agent_data["job"], agent_data["role"],
+                agent_data["status"], agent_data["cluster"]
+            ))
+
+    def populate_connections(self):
+        connections = [
+            "agent_001 (Active)", "agent_002 (Active)", "agent_003 (Active)",
+            "deployer_k8s-cluster-1 (Active)", "deployer_docker-swarm-1 (Active)",
+            "controller (Active)"
+        ]
+        for conn in connections:
+            self.connections_listbox.insert(tk.END, conn)
+
+    def process_cli_command(self, event=None):
+        command = self.cli_entry.get().strip()
+        if not command:
+            return
+
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.cli_output.insert(tk.END, f"[{timestamp}] > {command}\n")
+
+        # Simulate API responses
+        if "GET /jobs" in command:
+            response = json.dumps(self.jobs, indent=2)
+        elif "GET /agents" in command:
+            response = json.dumps(self.agents, indent=2)
+        elif "POST" in command and "start" in command:
+            response = '{"status": "success", "message": "Job started successfully"}'
+        elif "POST /deploy" in command:
+            response = '{"status": "success", "message": "Deployment initiated"}'
+        else:
+            response = '{"status": "success", "message": "Command executed"}'
+
+        self.cli_output.insert(tk.END, f"Response: {response}\n\n")
+        self.cli_output.see(tk.END)
+        self.cli_entry.delete(0, tk.END)
+
+    def simulate_tag_expansion(self):
+        selected = self.jobs_tree.selection()
+        if not selected:
+            messagebox.showwarning("Warning", "Please select a job first")
+            return
+
+        job_values = self.jobs_tree.item(selected[0])['values']
+        job_id = job_values[0]
+
+        # Simulate TAG expansion process
+        expansion_steps = [
+            f"Starting TAG expansion for {job_id}",
+            "Analyzing topology abstraction graph...",
+            "Identifying components and dependencies...",
+            "Mapping to real topology...",
+            "Generating deployment configuration...",
+            "TAG expansion completed successfully"
+        ]
+
+        self.system_state.insert(tk.END, f"\n=== TAG Expansion for {job_id} ===\n")
+        for step in expansion_steps:
+            self.system_state.insert(tk.END, f"• {step}\n")
+            self.system_state.see(tk.END)
+            self.root.update()
+            time.sleep(0.5)
+
+    def monitor_job(self):
+        selected = self.jobs_tree.selection()
+        if not selected:
+            messagebox.showwarning("Warning", "Please select a job first")
+            return
+
+        job_values = self.jobs_tree.item(selected[0])['values']
+        job_id = job_values[0]
+
+        monitoring_info = f"""
+=== Job Monitoring: {job_id} ===
+Status: {job_values[2]}
+Active Workers: {job_values[3]}
+Progress: 75% completed
+Last Update: {datetime.now().strftime("%H:%M:%S")}
+CPU Usage: 85%
+Memory Usage: 72%
+Network I/O: 1.2 GB/s
+        """
+
+        self.system_state.insert(tk.END, monitoring_info)
+        self.system_state.see(tk.END)
+
+    def update_system_state(self):
+        system_info = f"""
+=== Flame Controller System State ===
+Timestamp: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+Database Status: Connected
+Active Jobs: {len(self.jobs)}
+Total Agents: {len(self.agents)}
+Available Clusters: {len(self.clusters)}
+
+Recent Activities:
+• Job monitoring active
+• Resource allocation optimized
+• TAG expansion ready
+• System health: Normal
+        """
+
+        self.system_state.delete(1.0, tk.END)
+        self.system_state.insert(tk.END, system_info)
+
+    def update_database(self):
+        self.system_state.insert(tk.END,
+                                 f"\n[{datetime.now().strftime('%H:%M:%S')}] Database updated with latest job states\n")
+        self.system_state.see(tk.END)
+
+    def check_resources(self):
+        self.system_state.insert(tk.END,
+                                 f"\n[{datetime.now().strftime('%H:%M:%S')}] Resource check: All clusters operational\n")
+        self.system_state.see(tk.END)
+
+    def deploy_to_cluster(self, cluster_type):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+
+        deployment_log = f"""
+[{timestamp}] Initiating deployment to {cluster_type}
+• Connecting to orchestrator API...
+• Validating resource requirements...
+• Creating container specifications...
+• Allocating compute resources...
+• Starting deployment process...
+• Deployment successful!
+
+"""
+
+        self.deployment_logs.insert(tk.END, deployment_log)
+        self.deployment_logs.see(tk.END)
+
+        # Add notification
+        self.add_notification(f"Deployment to {cluster_type} completed")
+
+    def allocate_resources(self):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        log_entry = f"[{timestamp}] Resource allocation: 4 CPU cores, 8GB RAM allocated\n"
+        self.deployment_logs.insert(tk.END, log_entry)
+        self.deployment_logs.see(tk.END)
+
+    def scale_up(self):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        log_entry = f"[{timestamp}] Scaling up: Adding 2 additional worker nodes\n"
+        self.deployment_logs.insert(tk.END, log_entry)
+        self.deployment_logs.see(tk.END)
+
+    def scale_down(self):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        log_entry = f"[{timestamp}] Scaling down: Removing 1 worker node\n"
+        self.deployment_logs.insert(tk.END, log_entry)
+        self.deployment_logs.see(tk.END)
+
+    def update_deployment_logs(self):
+        initial_logs = f"""
+=== Deployer Activity Log ===
+[System Start] Deployer service initialized
+[System Start] Connected to Kubernetes API
+[System Start] Connected to Docker Swarm API
+[System Start] Ready to process deployment requests
+
+Available Orchestrators:
+• Kubernetes v1.24.0
+• Docker Swarm v20.10.12
+• Apache Mesos v1.11.0
+        """
+        self.deployment_logs.insert(tk.END, initial_logs)
+
+    def start_agent_task(self):
+        selected = self.agents_tree.selection()
+        if not selected:
+            messagebox.showwarning("Warning", "Please select an agent first")
+            return
+
+        agent_values = self.agents_tree.item(selected[0])['values']
+        agent_id = agent_values[0]
+
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        log_entry = f"[{timestamp}] Starting task for {agent_id}\n"
+        self.agent_logs.insert(tk.END, log_entry)
+        self.agent_logs.see(tk.END)
+
+    def monitor_agent_task(self):
+        selected = self.agents_tree.selection()
+        if not selected:
+            messagebox.showwarning("Warning", "Please select an agent first")
+            return
+
+        agent_values = self.agents_tree.item(selected[0])['values']
+        agent_id = agent_values[0]
+
+        monitoring_log = f"""
+=== Agent {agent_id} Monitoring ===
+Task Status: Running
+CPU Usage: 78%
+Memory Usage: 1.2GB/2GB
+Network I/O: 45 MB/s
+Training Progress: 65%
+Last Heartbeat: {datetime.now().strftime("%H:%M:%S")}
+
+"""
+        self.agent_logs.insert(tk.END, monitoring_log)
+        self.agent_logs.see(tk.END)
+
+    def terminate_agent_task(self):
+        selected = self.agents_tree.selection()
+        if not selected:
+            messagebox.showwarning("Warning", "Please select an agent first")
+            return
+
+        agent_values = self.agents_tree.item(selected[0])['values']
+        agent_id = agent_values[0]
+
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        log_entry = f"[{timestamp}] Terminating task for {agent_id} - Graceful shutdown initiated\n"
+        self.agent_logs.insert(tk.END, log_entry)
+        self.agent_logs.see(tk.END)
+
+        # Add notification
+        self.add_notification(f"Task terminated for {agent_id}")
+
+    def fetch_ml_code(self):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        log_entry = f"[{timestamp}] Fetching ML code from repository... Code retrieved successfully\n"
+        self.agent_logs.insert(tk.END, log_entry)
+        self.agent_logs.see(tk.END)
+
+    def start_worker_process(self):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        log_entry = f"[{timestamp}] Starting worker process as child... Worker PID: {random.randint(1000, 9999)}\n"
+        self.agent_logs.insert(tk.END, log_entry)
+        self.agent_logs.see(tk.END)
+
+    def on_agent_select(self, event):
+        selected = self.agents_tree.selection()
+        if not selected:
+            return
+
+        agent_values = self.agents_tree.item(selected[0])['values']
+        agent_id = agent_values[0]
+
+        if agent_id in self.agents:
+            agent_data = self.agents[agent_id]
+            details = f"""Agent ID: {agent_id}
+Job: {agent_data['job']}
+Role: {agent_data['role']}
+Status: {agent_data['status']}
+Cluster: {agent_data['cluster']}
+Started: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+Uptime: 2h 15m
+"""
+            self.agent_details.delete(1.0, tk.END)
+            self.agent_details.insert(tk.END, details)
+
+    def send_job_event(self):
+        event_message = f"Job event: job_001 status changed to 'Training'"
+        self.add_event(event_message)
+        self.add_notification(f"Event sent to all connected agents")
+
+    def send_deployment_event(self):
+        event_message = f"Deployment event: New worker deployed to k8s-cluster-1"
+        self.add_event(event_message)
+        self.add_notification(f"Deployment notification sent to deployers")
+
+    def send_alert(self):
+        event_message = f"Alert: High CPU usage detected on agent_002"
+        self.add_event(event_message)
+        self.add_notification(f"Alert sent to system administrators")
+
+    def add_event(self, message):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        event_entry = f"[{timestamp}] {message}\n"
+        self.events.append(event_entry)
+        self.event_logs.insert(tk.END, event_entry)
+        self.event_logs.see(tk.END)
+
+    def add_notification(self, message):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        notification_entry = f"[{timestamp}] {message}\n"
+        self.notifications.append(notification_entry)
+        self.notification_area.insert(tk.END, notification_entry)
+        self.notification_area.see(tk.END)
+
+        # Update statistics
+        self.update_notification_stats()
+
+    def update_event_logs(self):
+        initial_events = f"""
+=== Notifier Event Log ===
+[System Start] Notifier service initialized
+[System Start] WebSocket server started on port 8080
+[System Start] Connected components: 6
+[System Start] Event-driven management active
+
+Active Connections:
+• 4 Agent connections
+• 2 Deployer connections
+• 1 Controller connection
+
+Ready to process events...
+
+"""
+        self.event_logs.insert(tk.END, initial_events)
+
+    def update_notification_stats(self):
+        events_count = len(self.events)
+        notifications_count = len(self.notifications)
+        self.stats_label.config(text=f"Events Sent: {events_count} | Notifications: {notifications_count}")
+
+    def start_background_processes(self):
+        """Start background threads to simulate real-time updates"""
+
+        def background_updates():
+            while True:
+                time.sleep(30)  # Update every 30 seconds
+
+                # Simulate random events
+                random_events = [
+                    "Heartbeat received from agent_001",
+                    "Training epoch completed on agent_002",
+                    "Resource utilization updated",
+                    "Model parameters synchronized",
+                    "Agent status check completed"
+                ]
+
+                if random.random() < 0.3:  # 30% chance of random event
+                    event = random.choice(random_events)
+                    self.root.after(0, lambda: self.add_event(event))
+
+                # Update system state periodically
+                self.root.after(0, self.update_system_state)
+
+        # Start background thread
+        bg_thread = threading.Thread(target=background_updates, daemon=True)
+        bg_thread.start()
+
+
+def main():
+    root = tk.Tk()
+    app = FlameManagementPlane(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
