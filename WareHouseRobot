@@ -1,0 +1,497 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+import random
+import json
+
+
+class MultiAgentSimulator:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Multi-Agent Learning Simulator - Warehouse Robots")
+        self.root.geometry("1200x800")
+
+        # Simulation state
+        self.current_time = 1
+        self.max_time = 10
+        self.num_agents = 2
+        self.current_environment = "Warehouse"
+
+        # Sample warehouse robot data
+        self.environments = {
+            "Warehouse": {
+                "agents": ["Robot_R1", "Robot_R2"],
+                "zones": ["Zone_A", "Zone_B", "Zone_C", "Charging"],
+                "actions": ["Path_1", "Path_2", "Path_3", "Path_4"],
+                "speeds": [1.5, 2.0, 2.5, 3.0, 3.5],
+                "priorities": [1, 2, 3]
+            },
+            "Factory": {
+                "agents": ["Machine_M1", "Machine_M2"],
+                "zones": ["Assembly_Line_1", "Assembly_Line_2", "Quality_Check"],
+                "actions": ["Fast_Mode", "Normal_Mode", "Precision_Mode"],
+                "speeds": [0.8, 1.0, 1.2],
+                "priorities": [1, 2, 3]
+            },
+            "Delivery": {
+                "agents": ["Drone_D1", "Drone_D2"],
+                "zones": ["Depot", "Route_A", "Route_B", "Customer_Zone"],
+                "actions": ["Direct_Route", "Scenic_Route", "Express_Route"],
+                "speeds": [5.0, 7.5, 10.0],
+                "priorities": [1, 2, 3]
+            }
+        }
+
+        # Initialize simulation data
+        self.initialize_data()
+
+        self.create_ui()
+        self.reset_simulation()
+
+    def create_ui(self):
+        # Menu bar
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+
+        # File menu
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Environment", menu=file_menu)
+        file_menu.add_command(label="Warehouse", command=lambda: self.switch_environment("Warehouse"))
+        file_menu.add_command(label="Factory", command=lambda: self.switch_environment("Factory"))
+        file_menu.add_command(label="Delivery", command=lambda: self.switch_environment("Delivery"))
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.root.quit)
+
+        # Settings menu
+        settings_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Settings", menu=settings_menu)
+        settings_menu.add_command(label="Reset Simulation", command=self.reset_simulation)
+        settings_menu.add_command(label="Export Data", command=self.export_data)
+
+        # Main frame
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Left sidebar
+        self.create_sidebar(main_frame)
+
+        # Main content area
+        self.create_main_content(main_frame)
+
+    def create_sidebar(self, parent):
+        sidebar = ttk.Frame(parent, width=200)
+        sidebar.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+        sidebar.pack_propagate(False)
+
+        # Environment info
+        env_frame = ttk.LabelFrame(sidebar, text="Environment", padding=10)
+        env_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.env_label = ttk.Label(env_frame, text=f"Current: {self.current_environment}")
+        self.env_label.pack()
+
+        self.agents_label = ttk.Label(env_frame, text=f"Agents: {self.num_agents}")
+        self.agents_label.pack()
+
+        # Control buttons
+        control_frame = ttk.LabelFrame(sidebar, text="Controls", padding=10)
+        control_frame.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Button(control_frame, text="Step Forward", command=self.step_forward).pack(fill=tk.X, pady=2)
+        ttk.Button(control_frame, text="Step Backward", command=self.step_backward).pack(fill=tk.X, pady=2)
+        ttk.Button(control_frame, text="Auto Run", command=self.auto_run).pack(fill=tk.X, pady=2)
+        ttk.Button(control_frame, text="Reset", command=self.reset_simulation).pack(fill=tk.X, pady=2)
+
+        # Time control
+        time_frame = ttk.LabelFrame(sidebar, text="Time Control", padding=10)
+        time_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.time_label = ttk.Label(time_frame, text=f"Time: {self.current_time}")
+        self.time_label.pack()
+
+        self.time_scale = ttk.Scale(time_frame, from_=1, to=self.max_time, orient=tk.HORIZONTAL,
+                                    command=self.time_changed)
+        self.time_scale.set(self.current_time)
+        self.time_scale.pack(fill=tk.X, pady=5)
+
+        # Agent selection
+        agent_frame = ttk.LabelFrame(sidebar, text="Agent Selection", padding=10)
+        agent_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.agent_var = tk.StringVar()
+        self.agent_combo = ttk.Combobox(agent_frame, textvariable=self.agent_var,
+                                        values=self.environments[self.current_environment]["agents"],
+                                        state="readonly")
+        self.agent_combo.set(self.environments[self.current_environment]["agents"][0])
+        self.agent_combo.pack(fill=tk.X)
+        self.agent_combo.bind('<<ComboboxSelected>>', self.agent_changed)
+
+        # Quick actions
+        action_frame = ttk.LabelFrame(sidebar, text="Quick Actions", padding=10)
+        action_frame.pack(fill=tk.X)
+
+        ttk.Button(action_frame, text="Add Delay", command=self.add_delay).pack(fill=tk.X, pady=2)
+        ttk.Button(action_frame, text="Clear Delays", command=self.clear_delays).pack(fill=tk.X, pady=2)
+        ttk.Button(action_frame, text="Random Action", command=self.random_action).pack(fill=tk.X, pady=2)
+
+    def create_main_content(self, parent):
+        content = ttk.Frame(parent)
+        content.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+        # Notebook for tabs
+        notebook = ttk.Notebook(content)
+        notebook.pack(fill=tk.BOTH, expand=True)
+
+        # Simulation view tab
+        self.create_simulation_tab(notebook)
+
+        # Data view tab
+        self.create_data_tab(notebook)
+
+        # Analysis tab
+        self.create_analysis_tab(notebook)
+
+    def create_simulation_tab(self, notebook):
+        sim_frame = ttk.Frame(notebook)
+        notebook.add(sim_frame, text="Simulation View")
+
+        # Status display
+        status_frame = ttk.LabelFrame(sim_frame, text="Current Status", padding=10)
+        status_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.status_text = tk.Text(status_frame, height=4, wrap=tk.WORD)
+        self.status_text.pack(fill=tk.X)
+
+        # Agent actions table
+        actions_frame = ttk.LabelFrame(sim_frame, text="Agent Actions", padding=10)
+        actions_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+        # Create treeview for actions
+        columns = ("Time", "Agent", "Zone", "Action", "Speed", "Priority", "Loss")
+        self.actions_tree = ttk.Treeview(actions_frame, columns=columns, show="headings", height=8)
+
+        for col in columns:
+            self.actions_tree.heading(col, text=col)
+            self.actions_tree.column(col, width=80)
+
+        scrollbar1 = ttk.Scrollbar(actions_frame, orient=tk.VERTICAL, command=self.actions_tree.yview)
+        self.actions_tree.configure(yscroll=scrollbar1.set)
+
+        self.actions_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar1.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Gradients received table
+        gradients_frame = ttk.LabelFrame(sim_frame, text="Gradients Received", padding=10)
+        gradients_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Create treeview for gradients
+        grad_columns = ("Time", "Agent", "Available_Gradients", "Missing_Gradients", "Total_Available")
+        self.gradients_tree = ttk.Treeview(gradients_frame, columns=grad_columns, show="headings", height=8)
+
+        for col in grad_columns:
+            self.gradients_tree.heading(col, text=col.replace("_", " "))
+            self.gradients_tree.column(col, width=100)
+
+        scrollbar2 = ttk.Scrollbar(gradients_frame, orient=tk.VERTICAL, command=self.gradients_tree.yview)
+        self.gradients_tree.configure(yscroll=scrollbar2.set)
+
+        self.gradients_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar2.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def create_data_tab(self, notebook):
+        data_frame = ttk.Frame(notebook)
+        notebook.add(data_frame, text="Raw Data")
+
+        self.data_text = tk.Text(data_frame, wrap=tk.WORD)
+        scrollbar3 = ttk.Scrollbar(data_frame, orient=tk.VERTICAL, command=self.data_text.yview)
+        self.data_text.configure(yscroll=scrollbar3.set)
+
+        self.data_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar3.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def create_analysis_tab(self, notebook):
+        analysis_frame = ttk.Frame(notebook)
+        notebook.add(analysis_frame, text="Analysis")
+
+        # Regret calculation
+        regret_frame = ttk.LabelFrame(analysis_frame, text="Regret Analysis", padding=10)
+        regret_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.regret_text = tk.Text(regret_frame, height=6, wrap=tk.WORD)
+        self.regret_text.pack(fill=tk.X)
+
+        # Performance metrics
+        metrics_frame = ttk.LabelFrame(analysis_frame, text="Performance Metrics", padding=10)
+        metrics_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.metrics_text = tk.Text(metrics_frame, wrap=tk.WORD)
+        self.metrics_text.pack(fill=tk.BOTH, expand=True)
+
+    def initialize_data(self):
+        """Initialize data structures without updating display"""
+        self.simulation_data = []
+        self.gradient_data = []
+
+    def reset_simulation(self):
+        self.current_time = 1
+        self.simulation_data = []
+        self.gradient_data = []
+
+        # Generate sample data for warehouse robots
+        self.generate_sample_data()
+        if hasattr(self, 'time_scale'):  # Check if UI exists
+            self.time_scale.set(self.current_time)
+            self.update_display()
+
+    def generate_sample_data(self):
+        """Generate sample warehouse robot data"""
+        env = self.environments[self.current_environment]
+        agents = env["agents"]
+
+        for t in range(1, self.max_time + 1):
+            # Determine active agent (alternating pattern like in the figure)
+            active_agent_idx = (t - 1) % len(agents)
+            active_agent = agents[active_agent_idx]
+
+            # Generate action data
+            action_data = {
+                "time": t,
+                "active_agent": active_agent,
+                "zone": random.choice(env["zones"]),
+                "action": random.choice(env["actions"]),
+                "speed": random.choice(env["speeds"]),
+                "priority": random.choice(env["priorities"]),
+                "loss": round(random.uniform(5.0, 20.0), 1)
+            }
+            self.simulation_data.append(action_data)
+
+            # Generate gradient data with delays (like in the figure)
+            for agent in agents:
+                available_gradients = []
+
+                # Add some gradients with delays
+                for prev_t in range(1, t + 1):
+                    # Simulate communication delays
+                    if random.random() > 0.3:  # 70% chance of receiving gradient
+                        if prev_t not in available_gradients:
+                            available_gradients.append(prev_t)
+
+                # Remove some gradients to simulate delays
+                if t > 2 and random.random() > 0.7:
+                    if available_gradients:
+                        available_gradients.remove(random.choice(available_gradients))
+
+                missing_gradients = [i for i in range(1, t + 1) if i not in available_gradients]
+
+                gradient_data = {
+                    "time": t,
+                    "agent": agent,
+                    "available_gradients": sorted(available_gradients),
+                    "missing_gradients": sorted(missing_gradients),
+                    "total_available": len(available_gradients)
+                }
+                self.gradient_data.append(gradient_data)
+
+    def switch_environment(self, env_name):
+        self.current_environment = env_name
+        self.num_agents = len(self.environments[env_name]["agents"])
+        self.reset_simulation()
+
+        # Update UI (only if it exists)
+        if hasattr(self, 'env_label'):
+            self.env_label.config(text=f"Current: {self.current_environment}")
+            self.agents_label.config(text=f"Agents: {self.num_agents}")
+            self.agent_combo.config(values=self.environments[env_name]["agents"])
+            self.agent_combo.set(self.environments[env_name]["agents"][0])
+
+    def step_forward(self):
+        if self.current_time < self.max_time:
+            self.current_time += 1
+            if hasattr(self, 'time_scale'):
+                self.time_scale.set(self.current_time)
+            self.update_display()
+
+    def step_backward(self):
+        if self.current_time > 1:
+            self.current_time -= 1
+            if hasattr(self, 'time_scale'):
+                self.time_scale.set(self.current_time)
+            self.update_display()
+
+    def auto_run(self):
+        for t in range(1, self.max_time + 1):
+            self.current_time = t
+            if hasattr(self, 'time_scale'):
+                self.time_scale.set(self.current_time)
+            self.update_display()
+            self.root.update()
+            self.root.after(1000)  # 1 second delay
+
+    def time_changed(self, value):
+        try:
+            self.current_time = int(float(value))
+            if hasattr(self, 'time_label'):
+                self.time_label.config(text=f"Time: {self.current_time}")
+            self.update_display()
+        except (ValueError, TypeError):
+            # Handle invalid values gracefully
+            pass
+
+    def agent_changed(self, event):
+        if hasattr(self, 'status_text'):  # Only update if UI is ready
+            self.update_display()
+
+    def add_delay(self):
+        messagebox.showinfo("Add Delay", "Communication delay added to current time step")
+        self.update_display()
+
+    def clear_delays(self):
+        messagebox.showinfo("Clear Delays", "All communication delays cleared")
+        self.update_display()
+
+    def random_action(self):
+        env = self.environments[self.current_environment]
+        action = random.choice(env["actions"])
+        messagebox.showinfo("Random Action", f"Agent performs: {action}")
+
+    def update_display(self):
+        # Check if UI elements exist before updating
+        if not hasattr(self, 'time_label'):
+            return
+
+        # Update time label
+        self.time_label.config(text=f"Time: {self.current_time}")
+
+        # Update status (only if status_text exists)
+        if hasattr(self, 'status_text'):
+            current_data = [d for d in self.simulation_data if d["time"] <= self.current_time]
+            if current_data:
+                latest = current_data[-1]
+                status = f"Time {self.current_time}: {latest['active_agent']} in {latest['zone']} " \
+                         f"executing {latest['action']} at {latest['speed']} m/s " \
+                         f"(Priority: {latest['priority']}, Loss: {latest['loss']})"
+            else:
+                status = f"Time {self.current_time}: Simulation starting..."
+
+            self.status_text.delete(1.0, tk.END)
+            self.status_text.insert(tk.END, status)
+
+        # Update actions tree (only if it exists)
+        if hasattr(self, 'actions_tree'):
+            for item in self.actions_tree.get_children():
+                self.actions_tree.delete(item)
+
+            current_data = [d for d in self.simulation_data if d["time"] <= self.current_time]
+            for data in current_data:
+                self.actions_tree.insert("", tk.END, values=(
+                    data["time"], data["active_agent"], data["zone"],
+                    data["action"], data["speed"], data["priority"], data["loss"]
+                ))
+
+        # Update gradients tree (only if it exists)
+        if hasattr(self, 'gradients_tree'):
+            for item in self.gradients_tree.get_children():
+                self.gradients_tree.delete(item)
+
+            current_gradients = [g for g in self.gradient_data if g["time"] <= self.current_time]
+            for grad in current_gradients:
+                self.gradients_tree.insert("", tk.END, values=(
+                    grad["time"], grad["agent"],
+                    str(grad["available_gradients"]),
+                    str(grad["missing_gradients"]),
+                    grad["total_available"]
+                ))
+
+        # Update data tab (only if it exists)
+        if hasattr(self, 'data_text'):
+            current_data = [d for d in self.simulation_data if d["time"] <= self.current_time]
+            self.data_text.delete(1.0, tk.END)
+            self.data_text.insert(tk.END, f"Simulation Data up to Time {self.current_time}:\n\n")
+            self.data_text.insert(tk.END, json.dumps(current_data, indent=2))
+
+        # Update analysis (only if analysis elements exist)
+        if hasattr(self, 'regret_text') and hasattr(self, 'metrics_text'):
+            self.update_analysis()
+
+    def update_analysis(self):
+        # Check if analysis UI elements exist
+        if not hasattr(self, 'regret_text') or not hasattr(self, 'metrics_text'):
+            return
+
+        # Calculate regret
+        current_data = [d for d in self.simulation_data if d["time"] <= self.current_time]
+        if len(current_data) >= 2:
+            total_loss = sum(d["loss"] for d in current_data)
+            avg_loss = total_loss / len(current_data)
+            best_possible = min(d["loss"] for d in current_data) * len(current_data)
+            regret = total_loss - best_possible
+
+            regret_analysis = f"Regret Analysis (Time 1 to {self.current_time}):\n"
+            regret_analysis += f"Total Cumulative Loss: {total_loss:.1f}\n"
+            regret_analysis += f"Average Loss per Step: {avg_loss:.1f}\n"
+            regret_analysis += f"Best Possible Total: {best_possible:.1f}\n"
+            regret_analysis += f"Total Regret: {regret:.1f}\n"
+            regret_analysis += f"Regret per Step: {regret / len(current_data):.1f}"
+        else:
+            regret_analysis = "Insufficient data for regret calculation"
+
+        self.regret_text.delete(1.0, tk.END)
+        self.regret_text.insert(tk.END, regret_analysis)
+
+        # Performance metrics
+        current_gradients = [g for g in self.gradient_data if g["time"] <= self.current_time]
+        if current_gradients:
+            avg_available = sum(g["total_available"] for g in current_gradients) / len(current_gradients)
+
+            metrics = f"Performance Metrics:\n\n"
+            metrics += f"Environment: {self.current_environment}\n"
+            metrics += f"Number of Agents: {self.num_agents}\n"
+            metrics += f"Current Time Step: {self.current_time}\n"
+            metrics += f"Average Gradients Available: {avg_available:.1f}\n\n"
+
+            # Communication efficiency
+            total_possible_gradients = sum(g["time"] for g in current_gradients)
+            total_available_gradients = sum(g["total_available"] for g in current_gradients)
+            if total_possible_gradients > 0:
+                efficiency = (total_available_gradients / total_possible_gradients) * 100
+                metrics += f"Communication Efficiency: {efficiency:.1f}%\n"
+
+            # Delay analysis
+            total_missing = sum(len(g["missing_gradients"]) for g in current_gradients)
+            metrics += f"Total Missing Gradients: {total_missing}\n"
+
+            if current_data:
+                metrics += f"\nAgent Performance:\n"
+                for agent in self.environments[self.current_environment]["agents"]:
+                    agent_actions = [d for d in current_data if d["active_agent"] == agent]
+                    if agent_actions:
+                        agent_avg_loss = sum(d["loss"] for d in agent_actions) / len(agent_actions)
+                        metrics += f"{agent}: {len(agent_actions)} actions, avg loss {agent_avg_loss:.1f}\n"
+        else:
+            metrics = "No gradient data available"
+
+        self.metrics_text.delete(1.0, tk.END)
+        self.metrics_text.insert(tk.END, metrics)
+
+    def export_data(self):
+        """Export simulation data to file"""
+        try:
+            export_data = {
+                "environment": self.current_environment,
+                "current_time": self.current_time,
+                "simulation_data": self.simulation_data,
+                "gradient_data": self.gradient_data
+            }
+
+            filename = f"simulation_export_{self.current_environment}_{self.current_time}.json"
+            with open(filename, 'w') as f:
+                json.dump(export_data, f, indent=2)
+
+            messagebox.showinfo("Export Complete", f"Data exported to {filename}")
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export data: {str(e)}")
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = MultiAgentSimulator(root)
+    root.mainloop()
